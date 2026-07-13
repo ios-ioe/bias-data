@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { checkSubmission, insertSubmission } from "../lib/api.js";
-import { countTeamSubmissions } from "../lib/submissions.js";
+import { checkSubmission, fetchMyCount, submitEntry } from "../lib/api.js";
 import { useTeam } from "../context/TeamContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
 import { CATEGORIES, SOURCE_PLATFORMS } from "../config/quotas.js";
@@ -20,19 +19,13 @@ const DIALOG = {
 };
 
 const emptyLabels = () =>
-  CATEGORIES.reduce((acc, category) => ({ ...acc, [category.key]: null }), {});
+  CATEGORIES.reduce((acc, category) => ({ ...acc, [category.key]: 0 }), {});
 
-function validateForm(text, labels) {
+function validateForm(text) {
   const trimmed = text.trim();
   if (!trimmed) {
     return "Enter a Nepali sentence before submitting.";
   }
-
-  const unanswered = CATEGORIES.filter((category) => labels[category.key] === null);
-  if (unanswered.length > 0) {
-    return "Answer Yes or No for all 10 bias categories.";
-  }
-
   return "";
 }
 
@@ -62,19 +55,14 @@ export default function Submit() {
     [labels]
   );
 
-  const allLabelsAnswered = useMemo(
-    () => CATEGORIES.every((category) => labels[category.key] !== null),
-    [labels]
-  );
-
   const refreshCount = useCallback(async () => {
     try {
-      const count = await countTeamSubmissions(team_id);
+      const count = await fetchMyCount();
       setTeamCount(count);
     } catch {
       /* non-critical */
     }
-  }, [team_id]);
+  }, []);
 
   useEffect(() => {
     refreshCount();
@@ -97,8 +85,10 @@ export default function Submit() {
   }
 
   function buildSubmissionRow(checkOutcome) {
+    // Note: no team_id here — the backend derives it from the caller's signed
+    // session token (see /submit in routers/submission.py), so a team can
+    // never write a row under another team's id.
     return {
-      team_id,
       text: trimmedText,
       ...Object.fromEntries(
         CATEGORIES.map((category) => [category.key, labels[category.key]])
@@ -115,7 +105,7 @@ export default function Submit() {
     setFlowError("");
 
     try {
-      await insertSubmission(buildSubmissionRow(checkOutcome));
+      await submitEntry(buildSubmissionRow(checkOutcome));
       resetForm();
       await refreshCount();
       showToast("Submission saved successfully", { type: "success" });
@@ -150,7 +140,7 @@ export default function Submit() {
   }
 
   async function handleSubmit() {
-    const validationMessage = validateForm(text, labels);
+    const validationMessage = validateForm(text);
     if (validationMessage) {
       setValidationError(validationMessage);
       return;
@@ -261,12 +251,8 @@ export default function Submit() {
         <section className="panel">
           <div className="labels-head">
             <span className="field-label">Bias categories</span>
-            <Badge variant={allLabelsAnswered ? (anyBias ? "accent" : "neutral") : "warn"}>
-              {!allLabelsAnswered
-                ? "incomplete"
-                : anyBias
-                  ? "biased"
-                  : "non-biased"}
+            <Badge variant={anyBias ? "accent" : "neutral"}>
+              {anyBias ? "biased" : "non-biased"}
             </Badge>
           </div>
           <div className="labels">
@@ -321,7 +307,7 @@ export default function Submit() {
         <button
           type="button"
           className="btn btn-primary btn-lg"
-          disabled={!trimmedText || !allLabelsAnswered || busy}
+          disabled={!trimmedText || busy}
           onClick={handleSubmit}
         >
           {checking ? "Checking…" : saving ? "Saving…" : "Submit"}
