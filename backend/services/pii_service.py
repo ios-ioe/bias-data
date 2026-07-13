@@ -39,34 +39,16 @@ NEPALI_FIRST_NAMES: list[str] = [
     "Bishal",
     "Suman",
     "Sagar",
-    "Shrestha",
-    "Sharma",
-    "Adhikari",
-    "Poudel",
-    "Paudel",
-    "Bhattarai",
-    "Gurung",
-    "Tamang",
-    "Magar",
-    "Rai",
-    "Limbu",
-    "Thapa",
-    "Karki",
-    "Basnet",
-    "Khadka",
-    "Oli",
-    "Deuba",
-    "Koirala",
-    "Dahal",
-    "Nepal",
-    "Pokharel",
-    "Regmi",
-    "Acharya",
-    "Upadhyay",
-    "Joshi",
-    "Maharjan",
-    "Dangol",
 ]
+
+# NOTE: surnames (Shrestha, Sharma, Gurung, Tamang, etc.) were intentionally
+# removed from this PII list. In Nepali text, surnames are strong caste/
+# ethnicity markers, and "caste" is one of this tool's own 10 target bias
+# categories — flagging every sentence containing a common surname as PII
+# nudged annotators toward a friction dialog on exactly the caste-bias data
+# the competition needs. Surnames alone are also weak PII signal compared to
+# a phone number or email. If you need surname-level PII detection, pair it
+# with a nearby phone number/address match instead of a bare name hit.
 
 DEVANAGARI_NAMES: set[str] = {
     "राम",
@@ -110,34 +92,9 @@ DEVANAGARI_NAMES: set[str] = {
     "अशोक",
     "अर्जुन",
     "बिष्णु",
-    "श्रेष्ठ",
-    "शर्मा",
-    "अधिकारी",
-    "पौडेल",
-    "भट्टराई",
-    "गुरुङ",
-    "तामाङ",
-    "मगर",
-    "राई",
-    "लिम्बु",
-    "थापा",
-    "कार्की",
-    "बस्नेत",
-    "खड्का",
-    "ओली",
-    "देउवा",
-    "कोइराला",
-    "दाहाल",
-    "नेपाल",
-    "पोखरेल",
-    "रेग्मी",
-    "आचार्य",
-    "उपाध्याय",
-    "जोशी",
-    "महर्जन",
-    "डंगोल",
-    "बज्राचार्य",
 }
+# Surnames (श्रेष्ठ, शर्मा, गुरुङ, तामाङ, etc.) intentionally excluded — see note
+# above NEPALI_FIRST_NAMES.
 
 PHONE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\+9779[678]\d{8}"),
