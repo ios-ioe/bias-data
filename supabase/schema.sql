@@ -13,15 +13,45 @@ create extension if not exists "pgcrypto";
 -- Tables
 -- ---------------------------------------------------------------------------
 create table if not exists teams (
-  team_id       text primary key,
-  team_name     text not null,
-  access_code   text not null unique,
-  contact_email text,
-  created_at    timestamptz not null default now()
+  team_id        text primary key,
+  team_name      text not null,
+  access_code    text not null unique,
+  member_emails  text[] not null default '{}',
+  created_at     timestamptz not null default now(),
+  constraint teams_member_emails_count check (
+    array_length(member_emails, 1) between 2 and 4
+  )
 );
 
--- Safe to re-run on an existing project that predates this column.
-alter table teams add column if not exists contact_email text;
+-- ---------------------------------------------------------------------------
+-- Migration: member_emails replaces the old single contact_email column.
+-- Safe to re-run. If contact_email still exists from an earlier deploy,
+-- backfill it into member_emails as a single-entry array before dropping it,
+-- so no data is silently lost on upgrade.
+-- ---------------------------------------------------------------------------
+alter table teams add column if not exists member_emails text[] not null default '{}';
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_name = 'teams' and column_name = 'contact_email'
+  ) then
+    update teams
+    set member_emails = array[contact_email]
+    where contact_email is not null
+      and (member_emails is null or array_length(member_emails, 1) is null);
+
+    alter table teams drop column contact_email;
+  end if;
+end $$;
+
+-- Constraint is added after backfill so pre-existing single-email rows from
+-- the old contact_email column don't fail the 2-4 check on upgrade -- those
+-- teams should be topped up to 2+ emails manually via /admin/teams.
+alter table teams drop constraint if exists teams_member_emails_count;
+alter table teams add constraint teams_member_emails_count
+  check (array_length(member_emails, 1) between 2 and 4) not valid;
 
 create table if not exists submissions (
   id              uuid primary key default gen_random_uuid(),
@@ -101,6 +131,18 @@ create index if not exists submissions_disablity_idx
 
 create index if not exists teams_access_code_idx
   on teams(access_code);
+
+-- ---------------------------------------------------------------------------
+-- One-time cleanup: remove the static seed teams (team_01..team_05, team_dev)
+-- and any submissions attributed to them. All teams are now created live
+-- through POST /admin/teams; nothing should be hand-seeded anymore.
+-- Safe to re-run -- matches by team_id, so it's a no-op once these are gone.
+-- ---------------------------------------------------------------------------
+delete from submissions
+where team_id in ('team_01', 'team_02', 'team_03', 'team_04', 'team_05', 'team_dev');
+
+delete from teams
+where team_id in ('team_01', 'team_02', 'team_03', 'team_04', 'team_05', 'team_dev');
 
 -- ---------------------------------------------------------------------------
 -- Row Level Security

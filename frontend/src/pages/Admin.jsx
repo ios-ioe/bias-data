@@ -41,7 +41,7 @@ export default function Admin() {
   const [teamsList, setTeamsList] = useState([]);
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [newTeamName, setNewTeamName] = useState("");
-  const [newTeamEmail, setNewTeamEmail] = useState("");
+  const [newTeamEmails, setNewTeamEmails] = useState(["", ""]);
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [teamsError, setTeamsError] = useState("");
   const [copiedCode, setCopiedCode] = useState("");
@@ -93,17 +93,37 @@ export default function Admin() {
     if (authed && tab === TABS.TEAMS) loadTeams();
   }, [authed, tab, loadTeams]);
 
+  const trimmedEmails = newTeamEmails.map((e) => e.trim()).filter(Boolean);
+  const canCreateTeam = newTeamName.trim() && trimmedEmails.length >= 2 && trimmedEmails.length <= 4;
+
+  function updateEmailAt(index, value) {
+    setNewTeamEmails((prev) => prev.map((e, i) => (i === index ? value : e)));
+  }
+
+  function addEmailField() {
+    setNewTeamEmails((prev) => (prev.length < 4 ? [...prev, ""] : prev));
+  }
+
+  function removeEmailField(index) {
+    setNewTeamEmails((prev) => (prev.length > 2 ? prev.filter((_, i) => i !== index) : prev));
+  }
+
   async function handleCreateTeam(event) {
     event.preventDefault();
-    if (!newTeamName.trim()) return;
+    if (!canCreateTeam) return;
     setCreatingTeam(true);
     setTeamsError("");
     try {
-      await createTeam(newTeamName.trim(), newTeamEmail.trim());
+      const result = await createTeam(newTeamName.trim(), trimmedEmails);
       setNewTeamName("");
-      setNewTeamEmail("");
+      setNewTeamEmails(["", ""]);
       await loadTeams();
-      showToast("Team created", { type: "success" });
+      showToast(
+        result?.email_sent
+          ? "Team created — access code emailed to all members"
+          : "Team created — email not sent, copy the code and send it manually",
+        { type: result?.email_sent ? "success" : "warning" }
+      );
     } catch (err) {
       const message = err.message || "Failed to create team.";
       setTeamsError(message);
@@ -311,27 +331,49 @@ export default function Admin() {
                 disabled={creatingTeam}
               />
             </div>
-            <div>
-              <label className="field-label" htmlFor="new-team-email">
-                Contact email <span className="opt">optional</span>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+              <label className="field-label">
+                Member emails <span className="opt">2–4 required</span>
               </label>
-              <input
-                id="new-team-email"
-                className="input"
-                type="email"
-                placeholder="team@example.com"
-                value={newTeamEmail}
-                onChange={(event) => setNewTeamEmail(event.target.value)}
-                disabled={creatingTeam}
-              />
+              {newTeamEmails.map((email, index) => (
+                <div key={index} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                  <input
+                    className="input"
+                    type="email"
+                    placeholder={`member${index + 1}@example.com`}
+                    value={email}
+                    onChange={(event) => updateEmailAt(index, event.target.value)}
+                    disabled={creatingTeam}
+                  />
+                  {newTeamEmails.length > 2 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => removeEmailField(index)}
+                      disabled={creatingTeam}
+                      aria-label={`Remove email ${index + 1}`}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+              {newTeamEmails.length < 4 && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={addEmailField} disabled={creatingTeam}>
+                  + Add another member
+                </button>
+              )}
             </div>
-            <button type="submit" className="btn btn-primary" disabled={creatingTeam || !newTeamName.trim()}>
+
+            <button type="submit" className="btn btn-primary" disabled={creatingTeam || !canCreateTeam}>
               {creatingTeam ? "Creating…" : "Add team"}
             </button>
           </form>
           <p className="muted" style={{ marginBottom: "1rem" }}>
-            Adding a team generates a random access code here. Copy it and send it to the team
-            yourself (Gmail or any mail tool) — this app doesn't send email automatically yet.
+            Adding a team generates an access code (format: team-name-#####) shared by the whole
+            team, and emails it to every member listed above via Resend. If email delivery fails
+            or Resend isn't configured, copy the code from the table below and send it manually.
           </p>
 
           {teamsError && <div className="alert alert-error">{teamsError}</div>}
@@ -348,7 +390,7 @@ export default function Admin() {
                     <th>Team</th>
                     <th>Team ID</th>
                     <th>Access code</th>
-                    <th>Contact email</th>
+                    <th>Member emails</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -358,7 +400,11 @@ export default function Admin() {
                       <td>{team.team_name}</td>
                       <td className="mono-sm muted">{team.team_id}</td>
                       <td className="mono-sm">{team.access_code}</td>
-                      <td className="muted">{team.contact_email || "—"}</td>
+                      <td className="muted">
+                        {Array.isArray(team.member_emails) && team.member_emails.length > 0
+                          ? team.member_emails.join(", ")
+                          : "—"}
+                      </td>
                       <td>
                         <button
                           type="button"

@@ -1,19 +1,15 @@
 -- ============================================================================
--- Seed teams. Run after schema.sql.
--- Edit the rows below to match your actual teams, then share each access_code
--- privately with that team. Access codes are what teams type on the login screen.
+-- Seed teams.
+--
+-- Teams are no longer hand-seeded here. All teams are created live through
+-- POST /admin/teams (Admin UI -> Teams tab), which:
+--   - requires 2-4 member_emails (validated server-side)
+--   - generates an access code in the form <team_name_slug>-<5 digit number>
+--   - emails the access code to every listed member via Resend
+--
+-- This file is kept only so `psql -f seed.sql` after a fresh schema.sql apply
+-- doesn't error on a missing file in older setup docs. It intentionally
+-- inserts nothing.
 -- ============================================================================
 
-insert into teams (team_id, team_name, access_code) values
-  ('team_01', 'Team Everest',      'everest-7412'),
-  ('team_02', 'Team Machapuchare', 'fishtail-3390'),
-  ('team_03', 'Team Annapurna',    'anna-5561'),
-  ('team_04', 'Team Langtang',     'langtang-8823'),
-  ('team_05', 'Team Dhaulagiri',   'dhaula-1204'),
-  ('team_dev', 'Dev Test Team',    'dev-dev')
-on conflict (team_id) do update
-  set team_name   = excluded.team_name,
-      access_code = excluded.access_code;
-
--- Quick check
-select team_id, team_name from teams order by team_id;
+select 'No teams seeded here -- create teams via POST /admin/teams.' as note;

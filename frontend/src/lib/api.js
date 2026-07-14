@@ -151,10 +151,10 @@ export function fetchTeams() {
   return request("/admin/teams", { token: getAdminToken() });
 }
 
-export function createTeam(team_name, contact_email) {
+export function createTeam(team_name, member_emails) {
   return request("/admin/teams", {
     method: "POST",
-    body: { team_name, contact_email: contact_email || null },
+    body: { team_name, member_emails },
     token: getAdminToken(),
   });
 }

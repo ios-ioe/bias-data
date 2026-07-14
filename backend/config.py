@@ -16,8 +16,16 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 # MUST be set in production — a missing secret means sessions cannot be trusted.
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 
-# Organizer password for /admin/login. Checked server-side only — never shipped to the browser.
+# Organizer password for /admin/login. Checked server-side only -- never shipped to the browser.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+# Resend (https://resend.com) is used to email each team's access code to all
+# of its member_emails when a team is created. If RESEND_API_KEY is unset,
+# email sending is skipped (logged as a warning) and the organizer falls back
+# to copying the access code from the admin Teams tab -- team creation is
+# never blocked on email delivery succeeding.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM = os.environ.get("RESEND_FROM", "onboarding@resend.dev")
 
 # How long a team/admin session token stays valid, in seconds. Default: 20 hours
 # (covers a one-day event with margin) so all 2-4 members of a team can stay logged

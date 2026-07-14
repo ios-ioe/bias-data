@@ -102,12 +102,12 @@ def update_judge_reviewed(submission_id: str, reviewed: bool) -> None:
 def list_teams() -> list[dict]:
     sb = get_supabase()
     result = sb.table("teams").select(
-        "team_id,team_name,access_code,contact_email,created_at"
+        "team_id,team_name,access_code,member_emails,created_at"
     ).order("created_at", desc=True).execute()
     return result.data or []
 
 
-def create_team(team_id: str, team_name: str, access_code: str, contact_email: str | None) -> dict:
+def create_team(team_id: str, team_name: str, access_code: str, member_emails: list[str]) -> dict:
     sb = get_supabase()
     result = (
         sb.table("teams")
@@ -116,7 +116,7 @@ def create_team(team_id: str, team_name: str, access_code: str, contact_email: s
                 "team_id": team_id,
                 "team_name": team_name,
                 "access_code": access_code,
-                "contact_email": contact_email,
+                "member_emails": member_emails,
             }
         )
         .execute()

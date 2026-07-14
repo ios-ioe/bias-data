@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import database
 from config import CATEGORIES, NON_BIASED_TARGET, QUOTAS
 from models.schemas import CreateTeamRequest, MarkReviewedRequest, TeamResponse
+from services.email_service import send_team_access_code
 from services.qa_batch import run_qa_batch
 from utils.auth import require_admin
 
@@ -109,10 +110,11 @@ def _slugify(name: str) -> str:
 
 
 def _generate_access_code(slug: str) -> str:
-    # e.g. "team-everest-9f2a1c" — short, unique-enough, and doesn't leak team_id
-    # ordering since it's random, not sequential.
-    suffix = secrets.token_hex(3)
-    return f"{slug[:16]}-{suffix}"
+    # e.g. "everest-73920" -- team name slug + a random 5-digit number, shared
+    # by the whole team. secrets.randbelow keeps this cryptographically random
+    # (not guessable/sequential) while staying short enough to type by hand.
+    suffix = f"{secrets.randbelow(100_000):05d}"
+    return f"{slug[:20]}-{suffix}"
 
 
 @router.get("/teams", response_model=list[TeamResponse])
@@ -123,28 +125,45 @@ def get_teams(_: AdminSession):
     return database.list_teams()
 
 
+_MAX_ACCESS_CODE_ATTEMPTS = 5
+
+
 @router.post("/teams", response_model=TeamResponse)
 def add_team(body: CreateTeamRequest, _: AdminSession):
-    """Create a new team with a freshly generated access code. This replaces
-    hand-editing seed.sql for every team — organizers can add teams as they
-    register, any time before or during the event.
+    """Create a new team with a freshly generated access code and email it to
+    every member. This replaces hand-editing seed.sql for every team --
+    organizers can add teams as they register, any time before or during the
+    event.
 
-    NOTE: this does not send an email itself. There's no email provider wired
-    up (Resend/SendGrid/SMTP credentials, etc.) — the response includes the
-    access_code so the organizer can copy it into Gmail (or any mail client)
-    and send it to the team's contact_email by hand. If you want this to send
-    automatically, tell me which email provider you want to use and I'll wire
-    it in here.
+    Login model: ONE shared access code per team (format
+    "<team_name_slug>-<5 digit number>", e.g. "everest-73920"). Every member
+    types the same code to log in -- there's no separate per-member token.
+
+    Requires 2-4 member_emails (validated by CreateTeamRequest). The access
+    code is emailed to all of them via Resend (services/email_service.py). If
+    RESEND_API_KEY isn't configured, or the send fails, team creation still
+    succeeds -- the response's email_sent flag tells the organizer whether
+    they need to copy the access_code and send it manually instead.
     """
     slug = _slugify(body.team_name)
     team_id = f"team_{slug}_{secrets.token_hex(2)}"
-    access_code = _generate_access_code(slug)
 
-    try:
-        row = database.create_team(team_id, body.team_name.strip(), access_code, body.contact_email)
-    except Exception as exc:
-        logger.error("Failed to create team: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to create team — team_id or access_code collision, retry.")
+    row = None
+    last_exc: Exception | None = None
+    for _attempt in range(_MAX_ACCESS_CODE_ATTEMPTS):
+        access_code = _generate_access_code(slug)
+        try:
+            row = database.create_team(team_id, body.team_name.strip(), access_code, body.member_emails)
+            break
+        except Exception as exc:  # likely a unique constraint hit on access_code
+            last_exc = exc
+            logger.warning("Access code collision for team_id=%s, retrying: %s", team_id, exc)
 
-    logger.info("Admin created team team_id=%s", team_id)
-    return TeamResponse(**row)
+    if row is None:
+        logger.error("Failed to create team after %d attempts: %s", _MAX_ACCESS_CODE_ATTEMPTS, last_exc)
+        raise HTTPException(status_code=500, detail="Failed to create team — access_code collision, please retry.")
+
+    email_sent = send_team_access_code(row["team_name"], row["access_code"], row.get("member_emails") or [])
+
+    logger.info("Admin created team team_id=%s email_sent=%s", team_id, email_sent)
+    return TeamResponse(**row, email_sent=email_sent)

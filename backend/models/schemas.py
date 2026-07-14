@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class CheckSubmissionRequest(BaseModel):
@@ -61,14 +61,29 @@ class MarkReviewedRequest(BaseModel):
 
 class CreateTeamRequest(BaseModel):
     team_name: str = Field(..., min_length=1)
-    contact_email: Optional[str] = None
+    member_emails: list[EmailStr] = Field(..., min_length=2, max_length=4)
+
+    @field_validator("member_emails")
+    @classmethod
+    def dedupe_emails(cls, emails: list[EmailStr]) -> list[EmailStr]:
+        seen = set()
+        deduped = []
+        for email in emails:
+            key = str(email).lower()
+            if key not in seen:
+                seen.add(key)
+                deduped.append(email)
+        if len(deduped) < 2:
+            raise ValueError("At least 2 distinct member emails are required.")
+        return deduped
 
 
 class TeamResponse(BaseModel):
     team_id: str
     team_name: str
     access_code: str
-    contact_email: Optional[str] = None
+    member_emails: list[str] = Field(default_factory=list)
+    email_sent: Optional[bool] = None
 
 
 class DuplicateCheckResult(BaseModel):
