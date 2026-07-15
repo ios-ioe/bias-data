@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { checkSubmission, fetchMyCount, submitEntry } from "../lib/api.js";
+import { checkSubmission, fetchMyCount } from "../lib/api.js";
+import {
+  exportLocalBackup,
+  onQueueChange,
+  submitWithFallback,
+} from "../lib/offlineQueue.js";
 import { useTeam } from "../context/TeamContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
 import { CATEGORIES, SOURCE_PLATFORMS } from "../config/quotas.js";
@@ -45,6 +50,7 @@ export default function Submit() {
   const [checkResult, setCheckResult] = useState(null);
   const [activeDialog, setActiveDialog] = useState(DIALOG.NONE);
   const [teamCount, setTeamCount] = useState(null);
+  const [queuedCount, setQueuedCount] = useState(0);
 
   const trimmedText = text.trim();
   const charCount = trimmedText.length;
@@ -66,6 +72,20 @@ export default function Submit() {
 
   useEffect(() => {
     refreshCount();
+  }, [refreshCount]);
+
+  useEffect(() => {
+    let previousLength = 0;
+    const unsubscribe = onQueueChange((queue) => {
+      setQueuedCount(queue.length);
+      // Queue just drained (background retry succeeded) -- the saved count
+      // on screen is now stale, refresh it so it doesn't undercount.
+      if (queue.length === 0 && previousLength > 0) {
+        refreshCount();
+      }
+      previousLength = queue.length;
+    });
+    return unsubscribe;
   }, [refreshCount]);
 
   function setLabel(key, value) {
@@ -105,10 +125,20 @@ export default function Submit() {
     setFlowError("");
 
     try {
-      await submitEntry(buildSubmissionRow(checkOutcome));
+      const result = await submitWithFallback(buildSubmissionRow(checkOutcome));
       resetForm();
-      await refreshCount();
-      showToast("Submission saved successfully", { type: "success" });
+      if (result.synced) {
+        await refreshCount();
+        showToast("Submission saved successfully", { type: "success" });
+      } else {
+        // Backend unreachable — saved to this browser's local queue instead,
+        // and will sync automatically in the background. Don't show a
+        // "failed" toast; this is expected-path resilience, not an error.
+        showToast(
+          "Backend unreachable — saved on this device and will sync automatically. Don't clear your browser data until it syncs.",
+          { type: "warning", duration: 6000 }
+        );
+      }
     } catch (err) {
       const message = err.message || "Failed to save submission. Try again.";
       setFlowError(message);
@@ -188,6 +218,24 @@ export default function Submit() {
       {checking && (
         <div className="submit-overlay">
           <LoadingSpinner label="Running duplicate and PII checks…" />
+        </div>
+      )}
+
+      {queuedCount > 0 && (
+        <div className="alert alert-warn" role="status" aria-live="polite">
+          <strong>
+            {queuedCount} submission{queuedCount === 1 ? "" : "s"} pending sync
+          </strong>{" "}
+          — saved on this device, retrying automatically in the background.
+          Don't close this tab or clear browser data until{" "}
+          {queuedCount === 1 ? "it syncs" : "they sync"}.{" "}
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => exportLocalBackup()}
+          >
+            Download a backup copy now
+          </button>
         </div>
       )}
 

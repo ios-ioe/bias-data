@@ -77,7 +77,54 @@ Optional tuning: `FUZZ_PREFILTER_THRESHOLD`, `FUZZ_TOP_K`, `BATCH_SIMILARITY_THR
 
 ---
 
-## Setup
+## Hosting — how to deploy, and the best way to do it for a 100+ participant event
+
+This app is designed to run entirely on free tiers (Vercel + Hugging Face Spaces + Supabase). That's genuinely enough for a one-day, 100+ participant event — but "enough" depends on deploying it the right way and doing a few things before the event, not just pushing code and hoping.
+
+### Two deployment shapes
+
+**A. Single-Space (simple).** Frontend on Vercel, one backend Docker Space that also loads the embedding model in-process. Fewer moving parts, fine for smaller events or quick setup. Leave `EMBEDDER_URL` unset.
+
+**B. Split-embedder (recommended for 100+ concurrent participants).** Frontend on Vercel, a lightweight auth/submit backend Space, and a *second*, separate Docker Space (`embedder/`) that does nothing but turn text into embeddings. The backend calls it over HTTP with a short timeout and a circuit breaker, and automatically falls back to fuzzy-string matching if it's ever slow or unreachable — so the embedder Space being down can never block a submission.
+
+Why (B) is worth the extra setup step for a real event:
+- **Isolation.** ML inference (CPU-heavy, bursty) can't compete with or block auth/login/submit traffic — they're different processes on different Spaces.
+- **More total headroom.** Two free CPU-Basic Spaces = 4 vCPUs total instead of 2 shared between everything.
+- **Independent recovery.** You can restart the embedder mid-event without taking submissions down.
+- **Least privilege.** The embedder holds zero Supabase secrets and touches no participant data — it only ever sees the raw sentence text being checked.
+
+### 1. Supabase (~5 min)
+
+Same as before — see the Setup section below. **Before the event:** open the project and run a query at least once every few days leading up to it (free-tier projects auto-pause after ~1 week of inactivity — a paused project on event morning is a bad surprise). Don't upgrade off free tier for this app's data volume; the free tier's real limits (rows, bandwidth, compute) are well beyond what a one-day, few-thousand-row event produces. The only thing to actually manage is keeping it awake.
+
+### 2. Backend Space(s) on Hugging Face
+
+**Single-Space:** push `backend/` as a Docker Space as before. Leave `EMBEDDER_URL` unset.
+
+**Split-embedder (recommended):**
+1. Create Docker Space #1 from `backend/` — same secrets as before (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SESSION_SECRET`, `ADMIN_PASSWORD`), plus:
+   - `EMBEDDER_URL` — the embedder Space's URL (step 2 below)
+   - `EMBEDDER_API_KEY` — optional shared secret, must match the embedder Space's own `EMBEDDER_API_KEY`
+2. Create Docker Space #2 from `embedder/`. Its only required secret is `EMBEDDER_API_KEY` (optional but recommended — without it, anyone who finds the URL can call it, since it holds no other secrets to protect but can still burn your compute quota). Confirm `GET /health` returns `model_loaded: true` once it builds.
+3. Back on Space #1, confirm `GET /health` shows `"embedding_mode": "remote"` and `"embedder_reachable": true`.
+
+Both Spaces run on the free **CPU Basic** tier (2 vCPU / 16GB RAM, no autoscaling/replicas). That's sufficient for this app's traffic pattern (100 participants making occasional requests over several hours, not a sustained firehose) — the fixes in this patch (in-process duplicate-check cache instead of full-table re-embeds, semaphore-bounded encode concurrency, 2 Uvicorn workers) are what make "sufficient" actually true under a simultaneous burst, rather than the free tier alone.
+
+**Before the event:** set up a free external cron/uptime pinger (e.g. cron-job.org, UptimeRobot, or a GitHub Actions scheduled workflow) hitting `GET /health` on both Spaces every 20–30 minutes starting a few hours before the event. Free Spaces sleep after inactivity, and a cold start (model reload, container boot) taking 30–60+ seconds right as your first participants arrive is a far more likely failure mode than the traffic itself.
+
+### 3. Frontend on Vercel
+
+Unchanged from before — set `VITE_HF_SPACE_URL` to the *main backend* Space (not the embedder — the frontend never talks to the embedder directly). Vercel's free tier is a non-issue at this scale; it's a static SPA on a CDN.
+
+### Pre-event checklist (do this, not optional)
+
+1. Ping `/health` on every Space (and confirm Supabase responds) the morning of the event, not just once during setup weeks earlier. `python3 scripts/smoke_test.py --backend <url> --embedder <url> --access-code <code>` automates this in under a minute — health checks, login, and a live `/check-submission` timing check, all in one run.
+2. Load-test `/check-submission` specifically — not just `/submit` — with ~100 concurrent virtual users against a staging deploy. That endpoint is the one with real compute behind it; `/submit`/`/login` are cheap by comparison and were never the actual risk.
+3. If using the split-embedder setup, deliberately stop the embedder Space during a test and confirm `/check-submission` still returns (degraded, fuzzy-only) instead of erroring, and that `/submit` is completely unaffected.
+4. Seed 2–3 test teams and dry-run the full flow (see "Dry run before the event" below) against the *actual* deployed Spaces, not localhost.
+5. If you have any budget at all, the single highest-leverage upgrade is bumping the Spaces off free CPU-Basic for just event day — but it is not required; the free tier holds up for this app's actual load pattern once the fixes above are applied.
+
+---
 
 ### 1. Supabase (~5 min)
 

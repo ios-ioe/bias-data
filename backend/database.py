@@ -52,6 +52,14 @@ def fetch_all_submissions(columns: str, limit: Optional[int] = None) -> list[dic
     return rows[:limit] if limit else rows
 
 
+def count_all_submissions() -> int:
+    """Cheap row count, used to decide whether the in-process duplicate-check
+    cache needs a full reload (see services/duplicate_service.py)."""
+    sb = get_supabase()
+    result = sb.table("submissions").select("id", count="exact", head=True).execute()
+    return result.count or 0
+
+
 def verify_access_code(code: str) -> Optional[dict]:
     """Look up a team by access code via the verify_access_code RPC, using the
     service role key (bypasses RLS — this is the only place access codes are checked)."""
@@ -64,7 +72,29 @@ def verify_access_code(code: str) -> Optional[dict]:
 
 def insert_submission(row: dict) -> dict:
     sb = get_supabase()
-    result = sb.table("submissions").insert(row).select("id").execute()
+    try:
+        result = sb.table("submissions").insert(row).select("id").execute()
+    except Exception as exc:
+        client_submission_id = row.get("client_submission_id")
+        team_id = row.get("team_id")
+        # Unique violation on (team_id, client_submission_id) means this is a
+        # retried submit (offline outbox) whose earlier attempt actually
+        # succeeded server-side but never got its response back to the
+        # client. Treat that as success and hand back the existing row
+        # instead of erroring the retry.
+        if client_submission_id and "duplicate key" in str(exc).lower():
+            existing = (
+                sb.table("submissions")
+                .select("id")
+                .eq("team_id", team_id)
+                .eq("client_submission_id", client_submission_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return existing.data[0]
+        raise HTTPException(status_code=500, detail=f"Insert failed: {exc}") from exc
+
     data = result.data or []
     if not data:
         raise HTTPException(status_code=500, detail="Insert did not return a row")

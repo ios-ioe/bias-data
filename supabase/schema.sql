@@ -72,8 +72,19 @@ create table if not exists submissions (
   submitted_at    timestamptz not null default now(),
   flag_duplicate  boolean not null default false,
   flag_pii        boolean not null default false,
-  judge_reviewed  boolean not null default false
+  judge_reviewed  boolean not null default false,
+  client_submission_id uuid
 );
+
+alter table submissions add column if not exists client_submission_id uuid;
+
+-- Lets a retried /submit (e.g. from the frontend's offline outbox queue,
+-- after a request whose response was lost to a network blip) be recognized
+-- as "already saved" instead of inserted twice. Scoped per team_id so two
+-- different teams' client-generated UUIDs can never collide.
+create unique index if not exists submissions_team_client_id_idx
+  on submissions(team_id, client_submission_id)
+  where client_submission_id is not null;
 
 -- ---------------------------------------------------------------------------
 -- Indexes (performance for live queries, leaderboard, admin filters)

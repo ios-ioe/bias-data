@@ -22,7 +22,7 @@ from models.schemas import (
     SubmitRequest,
     SubmitResponse,
 )
-from services.duplicate_service import check_duplicate, get_model
+from services.duplicate_service import add_to_cache, check_duplicate
 from services.pii_service import scan_pii
 from utils.auth import require_team
 from utils.exceptions import AppError
@@ -39,15 +39,12 @@ def check_submission(body: CheckSubmissionRequest):
     """
     Run duplicate and PII checks on submission text.
 
-    Returns warnings only — never rejects a submission.
+    Returns warnings only — never rejects a submission. If neither the
+    remote embedder Space nor a local model is reachable, check_duplicate()
+    degrades to fuzzy-string matching rather than failing outright — this
+    endpoint should never be the reason a participant can't submit.
     """
     logger.info("check-submission received for team_id=%s", body.team_id)
-
-    try:
-        get_model()
-    except RuntimeError as exc:
-        logger.error("Model not loaded: %s", exc)
-        raise HTTPException(status_code=503, detail="Embedding model unavailable") from exc
 
     pii_result = scan_pii(body.text)
 
@@ -80,20 +77,36 @@ def submit(body: SubmitRequest, session: TeamSession):
     session token, not from the request body — a team can never write rows
     under another team's id."""
     team_id = session["team_id"]
+    if not team_id:
+        # An admin session has role="team"-compatible access (for support/
+        # debugging) but no team_id of its own -- writing would otherwise
+        # insert a null team_id and blow up on the NOT NULL/FK constraint
+        # with a confusing 500. Fail clearly instead.
+        raise HTTPException(
+            status_code=400,
+            detail="Admin sessions cannot submit rows — log in as a team to submit.",
+        )
 
+    text = body.text.strip()
     row = {
         "team_id": team_id,
-        "text": body.text.strip(),
+        "text": text,
         "source_platform": body.source_platform,
         "source_date": body.source_date,
         "flag_duplicate": body.flag_duplicate,
         "flag_pii": body.flag_pii,
+        "client_submission_id": body.client_submission_id,
     }
     for category in CATEGORIES:
         row[category] = getattr(body, category)
 
     result = database.insert_submission(row)
     logger.info("submission saved team_id=%s id=%s", team_id, result.get("id"))
+
+    # Keep the duplicate-check cache warm without waiting for its next poll --
+    # this row is now a candidate for the very next team's check.
+    add_to_cache(result["id"], text)
+
     return SubmitResponse(id=result["id"])
 
 

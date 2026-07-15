@@ -21,6 +21,9 @@ never in the browser.
 """
 
 import logging
+import threading
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -45,8 +48,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
-        # warmup_model()
-        pass
+        warmup_model()
     except Exception as exc:
         logger.error("Failed to load embedding model at startup: %s", exc)
     yield
@@ -65,6 +67,74 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _RateLimiter:
+    """Minimal in-memory sliding-window limiter, per client IP + path.
+
+    Not a substitute for a real edge rate limiter (it's per-process, so it
+    resets on restart and doesn't share state across replicas), but for a
+    single-Space one-day event it's enough to stop:
+      - /login being brute-forced against the access-code space, and
+      - a runaway client/bug hammering /check-submission (the CPU-heavy
+        endpoint) and starving other participants.
+    """
+
+    def __init__(self) -> None:
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, limit: int, window_seconds: float) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits[key]
+            while hits and now - hits[0] > window_seconds:
+                hits.popleft()
+            if len(hits) >= limit:
+                return False
+            hits.append(now)
+            return True
+
+
+_rate_limiter = _RateLimiter()
+
+# path -> (max requests, window seconds) per rate-limit key
+_RATE_LIMITS = {
+    # /login is unauthenticated, so IP is the only key we have. Loosened
+    # vs. a typical login endpoint because a whole venue/conference room of
+    # participants is often behind a handful of shared NAT/WiFi IPs -- this
+    # still meaningfully slows down brute-forcing a single access code
+    # (100,000 possible 5-digit suffixes) without throttling a real crowd.
+    "/login": (40, 60.0),
+    # /check-submission IS authenticated (team Bearer token) even though it
+    # doesn't require it structurally -- key by team when present so one
+    # team's rapid typing/editing can't eat into another team's quota on
+    # shared venue WiFi, and fall back to IP only for the rare caller with
+    # no token at all.
+    "/check-submission": (30, 60.0),
+}
+
+
+def _rate_limit_key(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return f"token:{auth.split(' ', 1)[1].strip()}"
+    client_ip = request.client.host if request.client else "unknown"
+    return f"ip:{client_ip}"
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    limit_config = _RATE_LIMITS.get(request.url.path)
+    if limit_config:
+        limit, window = limit_config
+        key = f"{request.url.path}:{_rate_limit_key(request)}"
+        if not _rate_limiter.allow(key, limit, window):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests — please slow down and try again shortly."},
+            )
+    return await call_next(request)
 
 app.include_router(health_router)
 app.include_router(auth_router)

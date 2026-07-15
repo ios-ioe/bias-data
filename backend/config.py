@@ -37,6 +37,20 @@ MODEL_NAME = os.environ.get(
 )
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.90"))
 
+# --- Optional standalone embedder Space -------------------------------------
+# If set, this backend calls out to a separate HF Space (see embedder/) that
+# does nothing but text -> embedding, instead of loading the model in this
+# process. Keeps ML compute off the box that holds Supabase secrets and auth,
+# and lets you restart/scale the embedder independently. If unset, falls back
+# to loading the model in-process exactly as before (single-Space deploy).
+EMBEDDER_URL = os.environ.get("EMBEDDER_URL", "").rstrip("/")
+EMBEDDER_TIMEOUT_SECONDS = float(os.environ.get("EMBEDDER_TIMEOUT_SECONDS", "3.0"))
+# After this many consecutive embedder failures, stop calling it for
+# EMBEDDER_CIRCUIT_COOLDOWN_SECONDS and fall back to fuzzy-only matching
+# (duplicate checks degrade gracefully instead of piling up slow timeouts).
+EMBEDDER_CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("EMBEDDER_CIRCUIT_FAILURE_THRESHOLD", "3"))
+EMBEDDER_CIRCUIT_COOLDOWN_SECONDS = float(os.environ.get("EMBEDDER_CIRCUIT_COOLDOWN_SECONDS", "30"))
+
 # RapidFuzz pre-filter: skip embedding when string similarity is below this score.
 FUZZ_PREFILTER_THRESHOLD = int(os.environ.get("FUZZ_PREFILTER_THRESHOLD", "55"))
 FUZZ_TOP_K = int(os.environ.get("FUZZ_TOP_K", "25"))

@@ -44,6 +44,11 @@ class SubmitRequest(BaseModel):
     source_date: Optional[str] = None
     flag_duplicate: bool = False
     flag_pii: bool = False
+    # Client-generated UUID (see frontend/src/lib/offlineQueue.js). Lets a
+    # retried submit — after a network error where the response never made
+    # it back, e.g. from the localStorage outbox queue — be recognized as
+    # "already saved" instead of inserted twice.
+    client_submission_id: Optional[str] = None
 
 
 class SubmitResponse(BaseModel):

@@ -6,6 +6,9 @@ import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { TeamProvider } from "./context/TeamContext.jsx";
 import { ToastProvider } from "./context/ToastContext.jsx";
 import "./styles.css";
+import { startBackgroundSync } from "./lib/offlineQueue.js";
+
+startBackgroundSync();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
