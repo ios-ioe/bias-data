@@ -11,6 +11,7 @@ class CheckSubmissionRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=1)
     access_code: str = Field(..., min_length=1)
 
 
@@ -21,11 +22,33 @@ class LoginResponse(BaseModel):
 
 
 class AdminLoginRequest(BaseModel):
+    email: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
 
 
 class AdminLoginResponse(BaseModel):
+    admin_id: str
+    admin_name: str
     token: str
+
+
+class BootstrapAdminRequest(BaseModel):
+    bootstrap_secret: str = Field(..., min_length=1)
+    admin_name: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
+
+
+class CreateAdminRequest(BaseModel):
+    admin_name: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
+
+
+class AdminAccountResponse(BaseModel):
+    admin_id: str
+    admin_name: str
+    email: str
 
 
 class SubmitRequest(BaseModel):
@@ -41,7 +64,7 @@ class SubmitRequest(BaseModel):
     Age: int = 0
     Disablity: int = 0
     source_platform: Optional[str] = None
-    source_date: Optional[str] = None
+    comment: Optional[str] = None
     flag_duplicate: bool = False
     flag_pii: bool = False
     # Client-generated UUID (see frontend/src/lib/offlineQueue.js). Lets a
@@ -112,3 +135,58 @@ class QaBatchResponse(BaseModel):
     flagged_duplicate: int = 0
     flagged_pii: int = 0
     updated_rows: int = 0
+
+
+# --- Judging (post-event blind review) --------------------------------------
+
+
+class CreateJudgeRequest(BaseModel):
+    judge_name: str = Field(..., min_length=1)
+
+
+class JudgeResponse(BaseModel):
+    judge_id: str
+    judge_name: str
+    access_code: str
+
+
+class JudgeLoginRequest(BaseModel):
+    access_code: str = Field(..., min_length=1)
+
+
+class JudgeLoginResponse(BaseModel):
+    judge_id: str
+    judge_name: str
+    token: str
+
+
+class JudgeQueueItem(BaseModel):
+    """Blind view for a judge -- text only. Never includes the participant's
+    labels, team_id, or team_name."""
+
+    id: str
+    text: str
+
+
+class JudgeLabelRequest(BaseModel):
+    submission_id: str = Field(..., min_length=1)
+    gender: int = 0
+    religional: int = 0
+    caste: int = 0
+    religion: int = 0
+    appearence: int = 0
+    socialstatus: int = 0
+    amiguity: int = 0
+    political: int = 0
+    Age: int = 0
+    Disablity: int = 0
+
+
+class SampleForJudgingRequest(BaseModel):
+    per_team: int = Field(default=10, ge=1, le=100)
+
+
+class SampleForJudgingResponse(BaseModel):
+    sampled: int
+    teams_sampled: int
+    teams_skipped_insufficient: int

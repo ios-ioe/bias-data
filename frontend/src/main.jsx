@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { TeamProvider } from "./context/TeamContext.jsx";
+import { JudgeProvider } from "./context/JudgeContext.jsx";
 import { ToastProvider } from "./context/ToastContext.jsx";
 import "./styles.css";
 import { startBackgroundSync } from "./lib/offlineQueue.js";
@@ -16,9 +17,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       <BrowserRouter>
         <ToastProvider>
           <TeamProvider>
-            <Suspense fallback={<div className="page-loading">Loading…</div>}>
-              <App />
-            </Suspense>
+            <JudgeProvider>
+              <Suspense fallback={<div className="page-loading">Loading…</div>}>
+                <App />
+              </Suspense>
+            </JudgeProvider>
           </TeamProvider>
         </ToastProvider>
       </BrowserRouter>

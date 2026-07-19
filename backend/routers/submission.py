@@ -92,7 +92,7 @@ def submit(body: SubmitRequest, session: TeamSession):
         "team_id": team_id,
         "text": text,
         "source_platform": body.source_platform,
-        "source_date": body.source_date,
+        "comment": body.comment,
         "flag_duplicate": body.flag_duplicate,
         "flag_pii": body.flag_pii,
         "client_submission_id": body.client_submission_id,
@@ -117,7 +117,7 @@ def my_submissions(session: TeamSession):
     team_id = session["team_id"]
     columns = "id,team_id,text," + ",".join(
         f'"{c}"' if c[0].isupper() else c for c in CATEGORIES
-    ) + ",source_platform,source_date,submitted_at,flag_duplicate,flag_pii,judge_reviewed"
+    ) + ",source_platform,comment,submitted_at,flag_duplicate,flag_pii,judge_reviewed"
     return database.fetch_submissions_for_team(team_id, columns)
 
 

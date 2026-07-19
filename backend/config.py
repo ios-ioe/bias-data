@@ -12,12 +12,34 @@ except Exception:
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# Comma-separated list of origins allowed to call this API from a browser.
+# Defaults cover local dev (Vite's default port) only -- before hosting,
+# set CORS_ALLOWED_ORIGINS to your deployed frontend's actual origin(s),
+# e.g. "https://your-frontend.vercel.app". Using "*" here (the old default)
+# meant any website could make browser-based calls to this API; tightening
+# this doesn't affect server-to-server calls (e.g. Postman, curl), only
+# what a browser will permit a *different* website's JS to call.
+_default_cors_origins = "http://localhost:5173,http://127.0.0.1:5173"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", _default_cors_origins).split(",")
+    if origin.strip()
+]
+
 # Secret used to sign team/admin session tokens issued by this backend.
 # MUST be set in production — a missing secret means sessions cannot be trusted.
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 
-# Organizer password for /admin/login. Checked server-side only -- never shipped to the browser.
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+# One-time bootstrap secret for creating the FIRST admin account (see
+# POST /admin/bootstrap in routers/admin.py). Admins now live in Supabase
+# (see the `admins` table + services/admin_service.py), each with their own
+# email/password -- this replaces the old single shared ADMIN_PASSWORD env
+# var. This secret only works while the admins table is empty; once at least
+# one admin exists, /admin/bootstrap always 403s regardless of this value,
+# so it can't be used to keep minting admin accounts if it ever leaks.
+# Unset (empty) disables bootstrapping entirely -- set it temporarily, create
+# your first admin, then you can remove it (not required, but tidy).
+ADMIN_BOOTSTRAP_SECRET = os.environ.get("ADMIN_BOOTSTRAP_SECRET", "")
 
 # Resend (https://resend.com) is used to email each team's access code to all
 # of its member_emails when a team is created. If RESEND_API_KEY is unset,
@@ -50,6 +72,14 @@ EMBEDDER_TIMEOUT_SECONDS = float(os.environ.get("EMBEDDER_TIMEOUT_SECONDS", "3.0
 # (duplicate checks degrade gracefully instead of piling up slow timeouts).
 EMBEDDER_CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("EMBEDDER_CIRCUIT_FAILURE_THRESHOLD", "3"))
 EMBEDDER_CIRCUIT_COOLDOWN_SECONDS = float(os.environ.get("EMBEDDER_CIRCUIT_COOLDOWN_SECONDS", "30"))
+
+# NER (used only by the organizer's QA batch, not per-submission) shares the
+# same EMBEDDER_URL/embedder Space as embeddings, but needs a much longer
+# timeout: it's a single one-off call across every submission at once
+# (possibly hundreds), and the Space may need to cold-start and download the
+# NER model on its very first call. No circuit breaker here -- unlike /embed,
+# this is never called per-request, so there's no risk of pile-up.
+NER_TIMEOUT_SECONDS = float(os.environ.get("NER_TIMEOUT_SECONDS", "60.0"))
 
 # RapidFuzz pre-filter: skip embedding when string similarity is below this score.
 FUZZ_PREFILTER_THRESHOLD = int(os.environ.get("FUZZ_PREFILTER_THRESHOLD", "55"))

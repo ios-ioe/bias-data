@@ -25,7 +25,7 @@ export default function SubmissionTable({ rows, onReviewChange, busyId }) {
             <th>Reviewed</th>
             <th>Submitted</th>
             <th>Platform</th>
-            <th>Date</th>
+            <th>Comment</th>
           </tr>
         </thead>
         <tbody>
@@ -68,7 +68,7 @@ export default function SubmissionTable({ rows, onReviewChange, busyId }) {
               </td>
               <td className="mono-sm">{formatSubmittedAt(row.submitted_at)}</td>
               <td>{row.source_platform || "—"}</td>
-              <td className="mono-sm">{row.source_date || "—"}</td>
+              <td className="td-text">{row.comment || "—"}</td>
             </tr>
           ))}
         </tbody>

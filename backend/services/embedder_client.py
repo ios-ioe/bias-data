@@ -25,6 +25,7 @@ from config import (
     EMBEDDER_TIMEOUT_SECONDS,
     EMBEDDER_URL,
     MODEL_NAME,
+    NER_TIMEOUT_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,4 +108,45 @@ def encode_remote(texts: list[str], api_key: str = "") -> Optional[np.ndarray]:
     except Exception as exc:
         logger.warning("Embedder Space call failed, will fall back: %s", exc)
         _breaker.record_failure()
+        return None
+
+
+_ner_client: Optional[httpx.Client] = None
+
+
+def _get_ner_http_client() -> httpx.Client:
+    # Separate client (and much longer timeout) from the embed one above --
+    # NER is a one-off batch call from the QA batch, possibly the Space's
+    # very first request ever if the NER model hasn't been touched yet
+    # (cold start + model download), not a per-submission call that needs
+    # to fail fast.
+    global _ner_client
+    if _ner_client is None:
+        _ner_client = httpx.Client(timeout=NER_TIMEOUT_SECONDS)
+    return _ner_client
+
+
+def ner_remote(texts: list[str], api_key: str = "") -> Optional[list[list[dict]]]:
+    """Try the remote embedder Space's /ner endpoint. Returns None (never
+    raises) on any failure -- including the Space being unconfigured, or
+    responding with available=False (its own NER model failed to load) --
+    so callers (pii_service.scan_pii_batch) can fall back to a local model
+    or plain regex+list detection. No circuit breaker: this is called at
+    most once per QA batch run, never per-request, so there's no pile-up
+    risk to guard against."""
+    if not is_remote_configured():
+        return None
+    try:
+        headers = {_EMBEDDER_API_KEY_HEADER: api_key} if api_key else {}
+        resp = _get_ner_http_client().post(
+            f"{EMBEDDER_URL}/ner", json={"texts": texts}, headers=headers
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("available", False):
+            logger.warning("Embedder Space's NER model isn't loaded there — falling back")
+            return None
+        return data["entities"]
+    except Exception as exc:
+        logger.warning("Embedder Space /ner call failed, will fall back: %s", exc)
         return None

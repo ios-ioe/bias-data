@@ -24,13 +24,17 @@ from fastapi import Header, HTTPException
 
 from config import SESSION_SECRET, SESSION_TTL_SECONDS
 
-Role = Literal["team", "admin"]
+Role = Literal["team", "admin", "judge"]
 
 
 class SessionPayload(TypedDict):
     role: Role
     team_id: str | None
     team_name: str | None
+    judge_id: str | None
+    judge_name: str | None
+    admin_id: str | None
+    admin_name: str | None
     exp: int
 
 
@@ -57,6 +61,10 @@ def create_token(
     role: Role,
     team_id: str | None = None,
     team_name: str | None = None,
+    judge_id: str | None = None,
+    judge_name: str | None = None,
+    admin_id: str | None = None,
+    admin_name: str | None = None,
     ttl_seconds: int | None = None,
 ) -> str:
     secret = _require_secret()
@@ -64,6 +72,10 @@ def create_token(
         "role": role,
         "team_id": team_id,
         "team_name": team_name,
+        "judge_id": judge_id,
+        "judge_name": judge_name,
+        "admin_id": admin_id,
+        "admin_name": admin_name,
         "exp": int(time.time()) + (ttl_seconds or SESSION_TTL_SECONDS),
     }
     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -118,4 +130,27 @@ def require_admin(authorization: str | None = Header(default=None)) -> SessionPa
     payload = _verify_raw(token)
     if payload["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin session required")
+    return payload
+
+
+def require_judge(authorization: str | None = Header(default=None)) -> SessionPayload:
+    """FastAPI dependency: verifies the token and requires role == judge.
+    Judges are a separate identity from teams/admin -- a judge session
+    carries no team_id and must never be usable against team-scoped routes
+    (require_team explicitly does not accept role="judge")."""
+    token = _extract_bearer(authorization)
+    payload = _verify_raw(token)
+    if payload["role"] != "judge":
+        raise HTTPException(status_code=403, detail="Judge session required")
+    return payload
+
+
+def require_admin_or_judge(authorization: str | None = Header(default=None)) -> SessionPayload:
+    """FastAPI dependency for routes that should stay hidden from
+    participants entirely -- e.g. the leaderboard, so teams can't see each
+    other's standings, only organizers and judges can."""
+    token = _extract_bearer(authorization)
+    payload = _verify_raw(token)
+    if payload["role"] not in ("admin", "judge"):
+        raise HTTPException(status_code=403, detail="Admin or judge session required")
     return payload

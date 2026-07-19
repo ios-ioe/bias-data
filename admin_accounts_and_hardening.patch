@@ -1,0 +1,1133 @@
+diff --git a/backend/app.py b/backend/app.py
+index bc153f2..0af8ec7 100644
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -18,8 +18,9 @@ with the anon key for CRUD. Routes:
+   POST /admin/mark-reviewed    — admin-only
+   GET  /admin/export           — admin-only: JSON export
+ 
+-The Supabase service role key and SESSION_SECRET/ADMIN_PASSWORD live only here,
+-never in the browser.
++The Supabase service role key and SESSION_SECRET live only here, never in the
++browser. Admin credentials now live in Supabase (hashed), not an env var --
++see routers/auth.py for /admin/login and the one-time /admin/bootstrap.
+ """
+ 
+ import logging
+@@ -32,7 +33,7 @@ from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import JSONResponse
+ 
+-from config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
++from config import CORS_ALLOWED_ORIGINS, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
+ from routers.admin import router as admin_router
+ from routers.auth import router as auth_router
+ from routers.health import router as health_router
+@@ -67,7 +68,7 @@ app = FastAPI(
+ 
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=["*"],
++    allow_origins=CORS_ALLOWED_ORIGINS,
+     allow_methods=["*"],
+     allow_headers=["*"],
+ )
+@@ -110,6 +111,13 @@ _RATE_LIMITS = {
+     # still meaningfully slows down brute-forcing a single access code
+     # (100,000 possible 5-digit suffixes) without throttling a real crowd.
+     "/login": (40, 60.0),
++    # Admin/judge logins are a much smaller pool of legitimate users than
++    # the whole participant crowd, so these can (and should) be much
++    # stricter -- there's no shared-venue-WiFi excuse for hundreds of
++    # attempts/minute against an admin password or judge code.
++    "/admin/login": (10, 60.0),
++    "/admin/bootstrap": (5, 300.0),
++    "/judge/login": (10, 60.0),
+     # /check-submission IS authenticated (team Bearer token) even though it
+     # doesn't require it structurally -- key by team when present so one
+     # team's rapid typing/editing can't eat into another team's quota on
+diff --git a/backend/config.py b/backend/config.py
+index 1df67e5..7eb141a 100644
+--- a/backend/config.py
++++ b/backend/config.py
+@@ -12,12 +12,34 @@ except Exception:
+ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+ 
++# Comma-separated list of origins allowed to call this API from a browser.
++# Defaults cover local dev (Vite's default port) only -- before hosting,
++# set CORS_ALLOWED_ORIGINS to your deployed frontend's actual origin(s),
++# e.g. "https://your-frontend.vercel.app". Using "*" here (the old default)
++# meant any website could make browser-based calls to this API; tightening
++# this doesn't affect server-to-server calls (e.g. Postman, curl), only
++# what a browser will permit a *different* website's JS to call.
++_default_cors_origins = "http://localhost:5173,http://127.0.0.1:5173"
++CORS_ALLOWED_ORIGINS = [
++    origin.strip()
++    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", _default_cors_origins).split(",")
++    if origin.strip()
++]
++
+ # Secret used to sign team/admin session tokens issued by this backend.
+ # MUST be set in production — a missing secret means sessions cannot be trusted.
+ SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
+ 
+-# Organizer password for /admin/login. Checked server-side only -- never shipped to the browser.
+-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
++# One-time bootstrap secret for creating the FIRST admin account (see
++# POST /admin/bootstrap in routers/admin.py). Admins now live in Supabase
++# (see the `admins` table + services/admin_service.py), each with their own
++# email/password -- this replaces the old single shared ADMIN_PASSWORD env
++# var. This secret only works while the admins table is empty; once at least
++# one admin exists, /admin/bootstrap always 403s regardless of this value,
++# so it can't be used to keep minting admin accounts if it ever leaks.
++# Unset (empty) disables bootstrapping entirely -- set it temporarily, create
++# your first admin, then you can remove it (not required, but tidy).
++ADMIN_BOOTSTRAP_SECRET = os.environ.get("ADMIN_BOOTSTRAP_SECRET", "")
+ 
+ # Resend (https://resend.com) is used to email each team's access code to all
+ # of its member_emails when a team is created. If RESEND_API_KEY is unset,
+@@ -51,6 +73,14 @@ EMBEDDER_TIMEOUT_SECONDS = float(os.environ.get("EMBEDDER_TIMEOUT_SECONDS", "3.0
+ EMBEDDER_CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("EMBEDDER_CIRCUIT_FAILURE_THRESHOLD", "3"))
+ EMBEDDER_CIRCUIT_COOLDOWN_SECONDS = float(os.environ.get("EMBEDDER_CIRCUIT_COOLDOWN_SECONDS", "30"))
+ 
++# NER (used only by the organizer's QA batch, not per-submission) shares the
++# same EMBEDDER_URL/embedder Space as embeddings, but needs a much longer
++# timeout: it's a single one-off call across every submission at once
++# (possibly hundreds), and the Space may need to cold-start and download the
++# NER model on its very first call. No circuit breaker here -- unlike /embed,
++# this is never called per-request, so there's no risk of pile-up.
++NER_TIMEOUT_SECONDS = float(os.environ.get("NER_TIMEOUT_SECONDS", "60.0"))
++
+ # RapidFuzz pre-filter: skip embedding when string similarity is below this score.
+ FUZZ_PREFILTER_THRESHOLD = int(os.environ.get("FUZZ_PREFILTER_THRESHOLD", "55"))
+ FUZZ_TOP_K = int(os.environ.get("FUZZ_TOP_K", "25"))
+diff --git a/backend/database.py b/backend/database.py
+index c4b7daa..cac27b4 100644
+--- a/backend/database.py
++++ b/backend/database.py
+@@ -249,6 +249,50 @@ def fetch_all_judge_labels() -> list[dict]:
+     return result.data or []
+ 
+ 
++# --- Admin accounts (multiple named organizer logins) ----------------------
++
++
++def fetch_admin_by_email(email: str) -> Optional[dict]:
++    """Look up an admin by email via the verify_admin_email RPC (service
++    role only) -- returns the bcrypt hash for admin_service.py to check,
++    never compared in SQL."""
++    sb = get_supabase()
++    result = sb.rpc("verify_admin_email", {"admin_email": email}).execute()
++    rows = result.data or []
++    row = rows[0] if isinstance(rows, list) else rows
++    return row or None
++
++
++def count_admins() -> int:
++    sb = get_supabase()
++    result = sb.table("admins").select("admin_id", count="exact").execute()
++    return result.count or 0
++
++
++def create_admin(admin_name: str, email: str, password_hash: str) -> dict:
++    sb = get_supabase()
++    result = (
++        sb.table("admins")
++        .insert({"admin_name": admin_name, "email": email, "password_hash": password_hash})
++        .execute()
++    )
++    data = result.data or []
++    if not data:
++        raise HTTPException(status_code=500, detail="Insert did not return a row")
++    return data[0]
++
++
++def list_admins() -> list[dict]:
++    sb = get_supabase()
++    result = (
++        sb.table("admins")
++        .select("admin_id,admin_name,email,created_at")
++        .order("created_at", desc=True)
++        .execute()
++    )
++    return result.data or []
++
++
+ def list_teams() -> list[dict]:
+     sb = get_supabase()
+     result = sb.table("teams").select(
+diff --git a/backend/models/schemas.py b/backend/models/schemas.py
+index 056ef11..3a1c97b 100644
+--- a/backend/models/schemas.py
++++ b/backend/models/schemas.py
+@@ -22,13 +22,35 @@ class LoginResponse(BaseModel):
+ 
+ 
+ class AdminLoginRequest(BaseModel):
++    email: str = Field(..., min_length=1)
+     password: str = Field(..., min_length=1)
+ 
+ 
+ class AdminLoginResponse(BaseModel):
++    admin_id: str
++    admin_name: str
+     token: str
+ 
+ 
++class BootstrapAdminRequest(BaseModel):
++    bootstrap_secret: str = Field(..., min_length=1)
++    admin_name: str = Field(..., min_length=1)
++    email: str = Field(..., min_length=1)
++    password: str = Field(..., min_length=8)
++
++
++class CreateAdminRequest(BaseModel):
++    admin_name: str = Field(..., min_length=1)
++    email: str = Field(..., min_length=1)
++    password: str = Field(..., min_length=8)
++
++
++class AdminAccountResponse(BaseModel):
++    admin_id: str
++    admin_name: str
++    email: str
++
++
+ class SubmitRequest(BaseModel):
+     text: str = Field(..., min_length=1)
+     gender: int = 0
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index 8b7cb1d..60fb54d 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -3,7 +3,9 @@ uvicorn[standard]==0.34.0
+ supabase==2.31.0
+ python-dotenv==1.0.1
+ sentence-transformers==3.3.1
++transformers>=4.46.0
+ rapidfuzz>=3.11.0
+ regex==2024.11.6
+ httpx>=0.27.0
+ email-validator>=2.2.0
++bcrypt>=4.2.0
+diff --git a/backend/routers/admin.py b/backend/routers/admin.py
+index 5cc94cd..5643101 100644
+--- a/backend/routers/admin.py
++++ b/backend/routers/admin.py
+@@ -15,6 +15,8 @@ import random
+ 
+ from config import CATEGORIES, NON_BIASED_TARGET, QUOTAS
+ from models.schemas import (
++    AdminAccountResponse,
++    CreateAdminRequest,
+     CreateJudgeRequest,
+     CreateTeamRequest,
+     JudgeResponse,
+@@ -23,6 +25,7 @@ from models.schemas import (
+     SampleForJudgingResponse,
+     TeamResponse,
+ )
++from services.admin_service import hash_password
+ from services.email_service import send_team_access_code
+ from services.judge_service import build_judge_report
+ from services.leaderboard_service import build_leaderboard
+@@ -206,6 +209,35 @@ def add_judge(body: CreateJudgeRequest, _: AdminSession):
+     return JudgeResponse(**row)
+ 
+ 
++# --- Admin account management ------------------------------------------------
++# The very FIRST admin account is created via the unauthenticated
++# POST /admin/bootstrap (see routers/auth.py), gated by ADMIN_BOOTSTRAP_SECRET.
++# Every admin account after that is created here, by an already-logged-in
++# admin -- same "authenticated action creates the next credential" pattern
++# as team/judge creation.
++
++
++@router.get("/admins", response_model=list[AdminAccountResponse])
++def get_admins(_: AdminSession):
++    """List all admin accounts (name + email only, never password hashes)."""
++    return database.list_admins()
++
++
++@router.post("/admins", response_model=AdminAccountResponse)
++def add_admin(body: CreateAdminRequest, _: AdminSession):
++    """Create another admin account. Requires being logged in as an admin
++    already -- there's no open signup for admin access."""
++    password_hash = hash_password(body.password)
++    try:
++        row = database.create_admin(body.admin_name.strip(), body.email.strip(), password_hash)
++    except Exception as exc:
++        logger.warning("Failed to create admin %s (likely duplicate email): %s", body.email, exc)
++        raise HTTPException(status_code=400, detail="That email is already registered as an admin.")
++
++    logger.info("Admin created another admin account admin_id=%s", row["admin_id"])
++    return AdminAccountResponse(admin_id=row["admin_id"], admin_name=row["admin_name"], email=row["email"])
++
++
+ @router.post("/judge-sample", response_model=SampleForJudgingResponse)
+ def sample_for_judging(body: SampleForJudgingRequest, _: AdminSession):
+     """Randomly pick `per_team` submissions from EACH team (not a flat pool)
+diff --git a/backend/routers/auth.py b/backend/routers/auth.py
+index c2f9393..1315e52 100644
+--- a/backend/routers/auth.py
++++ b/backend/routers/auth.py
+@@ -1,18 +1,20 @@
+ """Login endpoints — the only places that mint session tokens."""
+ 
+-import hmac
+ import logging
+ 
+ from fastapi import APIRouter, HTTPException
+ 
+-from config import ADMIN_PASSWORD
++import database
++from config import ADMIN_BOOTSTRAP_SECRET
+ from database import verify_access_code
+ from models.schemas import (
+     AdminLoginRequest,
+     AdminLoginResponse,
++    BootstrapAdminRequest,
+     LoginRequest,
+     LoginResponse,
+ )
++from services.admin_service import hash_password, verify_admin_credentials
+ from utils.auth import create_token
+ 
+ logger = logging.getLogger(__name__)
+@@ -39,13 +41,42 @@ def login(body: LoginRequest):
+ 
+ @router.post("/admin/login", response_model=AdminLoginResponse)
+ def admin_login(body: AdminLoginRequest):
+-    """Verify the organizer password server-side. ADMIN_PASSWORD lives only in
+-    backend secrets — it is never sent to the browser (unlike the old VITE_
+-    build-time env var, which shipped inside the JS bundle)."""
+-    if not ADMIN_PASSWORD:
+-        raise HTTPException(status_code=500, detail="Server missing ADMIN_PASSWORD secret.")
+-    if not hmac.compare_digest(body.password, ADMIN_PASSWORD):
+-        raise HTTPException(status_code=401, detail="Wrong password.")
+-
+-    token = create_token(role="admin")
+-    return AdminLoginResponse(token=token)
++    """Verify an admin's email + password against the bcrypt hash stored in
++    Supabase (see services/admin_service.py) and issue a signed session
++    token. Replaces the old single shared ADMIN_PASSWORD env-var check --
++    each organizer now has their own account."""
++    admin = verify_admin_credentials(body.email.strip(), body.password)
++    if not admin:
++        raise HTTPException(status_code=401, detail="Wrong email or password.")
++
++    token = create_token(role="admin", admin_id=admin["admin_id"], admin_name=admin["admin_name"])
++    return AdminLoginResponse(admin_id=admin["admin_id"], admin_name=admin["admin_name"], token=token)
++
++
++@router.post("/admin/bootstrap", response_model=AdminLoginResponse)
++def bootstrap_admin(body: BootstrapAdminRequest):
++    """Create the FIRST admin account. Only works if:
++      1. ADMIN_BOOTSTRAP_SECRET is set on the server, AND
++      2. the provided bootstrap_secret matches it, AND
++      3. no admin account exists yet.
++    Once at least one admin exists, this always 403s regardless of the
++    secret -- so a leaked bootstrap secret can't be used to keep minting
++    admin accounts after the first one. Further admins are created via the
++    authenticated POST /admin/admins endpoint instead (see routers/admin.py)."""
++    if not ADMIN_BOOTSTRAP_SECRET:
++        raise HTTPException(status_code=403, detail="Bootstrap is disabled on this server.")
++    if body.bootstrap_secret != ADMIN_BOOTSTRAP_SECRET:
++        raise HTTPException(status_code=403, detail="Invalid bootstrap secret.")
++    if database.count_admins() > 0:
++        raise HTTPException(
++            status_code=403,
++            detail="An admin account already exists — bootstrap is only for the very first one. "
++            "Use an existing admin account to create more from the Admin panel.",
++        )
++
++    password_hash = hash_password(body.password)
++    row = database.create_admin(body.admin_name.strip(), body.email.strip(), password_hash)
++
++    logger.info("Bootstrap: created first admin account admin_id=%s", row["admin_id"])
++    token = create_token(role="admin", admin_id=row["admin_id"], admin_name=row["admin_name"])
++    return AdminLoginResponse(admin_id=row["admin_id"], admin_name=row["admin_name"], token=token)
+diff --git a/backend/services/admin_service.py b/backend/services/admin_service.py
+new file mode 100644
+index 0000000..cef65eb
+--- /dev/null
++++ b/backend/services/admin_service.py
+@@ -0,0 +1,51 @@
++"""Admin account management -- password hashing/verification lives here,
++kept separate from database.py so the bcrypt dependency and comparison
++logic are in one obvious place rather than scattered across callers.
++
++Passwords are never compared in SQL. verify_admin_email (the Supabase RPC)
++only returns the stored bcrypt hash for a given email; the actual
++credential check happens here, in Python, with bcrypt.checkpw -- a
++constant-time comparison against the hash, same security property
++hmac.compare_digest gave the old single ADMIN_PASSWORD check.
++"""
++
++import logging
++from typing import Optional
++
++import bcrypt
++
++import database
++
++logger = logging.getLogger(__name__)
++
++_BCRYPT_ROUNDS = 12
++
++
++def hash_password(plaintext: str) -> str:
++    return bcrypt.hashpw(plaintext.encode("utf-8"), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode("utf-8")
++
++
++def verify_admin_credentials(email: str, password: str) -> Optional[dict]:
++    """Look up an admin by email and check the password against the stored
++    bcrypt hash. Returns {admin_id, admin_name} on success, None on any
++    mismatch (wrong email OR wrong password -- deliberately not
++    distinguished, so a login failure never reveals whether the email
++    exists)."""
++    row = database.fetch_admin_by_email(email)
++    if not row:
++        # Still run a bcrypt check against a dummy hash so a nonexistent
++        # email doesn't return measurably faster than a wrong password for
++        # a real one (timing side-channel on account enumeration).
++        bcrypt.checkpw(b"", bcrypt.gensalt(_BCRYPT_ROUNDS))
++        return None
++
++    try:
++        ok = bcrypt.checkpw(password.encode("utf-8"), row["password_hash"].encode("utf-8"))
++    except (ValueError, TypeError) as exc:
++        logger.error("Admin password hash for %s is malformed: %s", email, exc)
++        return None
++
++    if not ok:
++        return None
++
++    return {"admin_id": row["admin_id"], "admin_name": row["admin_name"]}
+diff --git a/backend/services/embedder_client.py b/backend/services/embedder_client.py
+index 9ab685f..fc89fea 100644
+--- a/backend/services/embedder_client.py
++++ b/backend/services/embedder_client.py
+@@ -25,6 +25,7 @@ from config import (
+     EMBEDDER_TIMEOUT_SECONDS,
+     EMBEDDER_URL,
+     MODEL_NAME,
++    NER_TIMEOUT_SECONDS,
+ )
+ 
+ logger = logging.getLogger(__name__)
+@@ -108,3 +109,44 @@ def encode_remote(texts: list[str], api_key: str = "") -> Optional[np.ndarray]:
+         logger.warning("Embedder Space call failed, will fall back: %s", exc)
+         _breaker.record_failure()
+         return None
++
++
++_ner_client: Optional[httpx.Client] = None
++
++
++def _get_ner_http_client() -> httpx.Client:
++    # Separate client (and much longer timeout) from the embed one above --
++    # NER is a one-off batch call from the QA batch, possibly the Space's
++    # very first request ever if the NER model hasn't been touched yet
++    # (cold start + model download), not a per-submission call that needs
++    # to fail fast.
++    global _ner_client
++    if _ner_client is None:
++        _ner_client = httpx.Client(timeout=NER_TIMEOUT_SECONDS)
++    return _ner_client
++
++
++def ner_remote(texts: list[str], api_key: str = "") -> Optional[list[list[dict]]]:
++    """Try the remote embedder Space's /ner endpoint. Returns None (never
++    raises) on any failure -- including the Space being unconfigured, or
++    responding with available=False (its own NER model failed to load) --
++    so callers (pii_service.scan_pii_batch) can fall back to a local model
++    or plain regex+list detection. No circuit breaker: this is called at
++    most once per QA batch run, never per-request, so there's no pile-up
++    risk to guard against."""
++    if not is_remote_configured():
++        return None
++    try:
++        headers = {_EMBEDDER_API_KEY_HEADER: api_key} if api_key else {}
++        resp = _get_ner_http_client().post(
++            f"{EMBEDDER_URL}/ner", json={"texts": texts}, headers=headers
++        )
++        resp.raise_for_status()
++        data = resp.json()
++        if not data.get("available", False):
++            logger.warning("Embedder Space's NER model isn't loaded there — falling back")
++            return None
++        return data["entities"]
++    except Exception as exc:
++        logger.warning("Embedder Space /ner call failed, will fall back: %s", exc)
++        return None
+diff --git a/backend/services/pii_service.py b/backend/services/pii_service.py
+index ad1b615..090213a 100644
+--- a/backend/services/pii_service.py
++++ b/backend/services/pii_service.py
+@@ -2,7 +2,10 @@
+ 
+ import logging
+ import re
+-from typing import TypedDict
++import threading
++from typing import Optional, TypedDict
++
++from services.embedder_client import ner_remote
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -157,7 +160,11 @@ def _find_devanagari_names(text: str) -> list[str]:
+ 
+ 
+ def scan_pii(text: str) -> PiiResult:
+-    """Detect phone numbers, emails, and common Nepali first names."""
++    """Detect phone numbers, emails, and common Nepali first names.
++
++    Used on the LIVE /check-submission path -- regex + a fixed name list
++    only, deliberately. No model loading, no network call, no meaningful
++    latency added to a participant's submit flow."""
+     matched: list[str] = []
+     matched.extend(_find_phones(text))
+     matched.extend(_find_emails(text))
+@@ -169,3 +176,137 @@ def scan_pii(text: str) -> PiiResult:
+         logger.info("PII matches found: %s", matched)
+ 
+     return {"flagged": flagged, "matched_terms": matched}
++
++
++# ---------------------------------------------------------------------------
++# NER-based name detection -- QA BATCH ONLY (see run_qa_batch in qa_batch.py).
++#
++# The fixed name list above catches ~70 common first names instantly with
++# zero latency, which is fine for the live per-submission check. It misses
++# everything else, though -- most Nepali names aren't in any fixed list.
++# Since the QA batch is an admin-triggered, one-time, post-event action (not
++# something running on every participant's submit click), we can afford to
++# lazily load a real NER model here and run it once across every row, without
++# adding any cost to the live flow at all.
++#
++# This never raises: if the model can't be loaded (no internet, HF Hub
++# unreachable, out of memory, whatever), the batch just logs a warning and
++# falls back to the regex+list-only result for every row -- same as before
++# this feature existed.
++# ---------------------------------------------------------------------------
++
++NER_MODEL_NAME = "debabrata-ai/Nepali-Named-Entity-Tagger-XLM-R"
++
++_ner_pipeline = None
++_ner_load_attempted = False
++_ner_lock = threading.Lock()
++
++
++def _get_ner_pipeline():
++    """Lazily load the NER pipeline on first use. Loaded at most once per
++    process; a failed load is remembered so we don't retry a slow HF Hub
++    download on every single batch run within the same process lifetime."""
++    global _ner_pipeline, _ner_load_attempted
++
++    with _ner_lock:
++        if _ner_pipeline is not None or _ner_load_attempted:
++            return _ner_pipeline
++
++        _ner_load_attempted = True
++        try:
++            from transformers import (
++                AutoModelForTokenClassification,
++                AutoTokenizer,
++                pipeline,
++            )
++
++            logger.info("QA batch: loading NER model %s (first use, may take a while)", NER_MODEL_NAME)
++            tokenizer = AutoTokenizer.from_pretrained(NER_MODEL_NAME)
++            model = AutoModelForTokenClassification.from_pretrained(NER_MODEL_NAME)
++            _ner_pipeline = pipeline(
++                "ner",
++                model=model,
++                tokenizer=tokenizer,
++                aggregation_strategy="simple",
++            )
++            logger.info("QA batch: NER model loaded successfully")
++        except Exception as exc:
++            logger.warning(
++                "QA batch: could not load NER model (%s) -- falling back to "
++                "regex + fixed name list only for this run: %s",
++                NER_MODEL_NAME,
++                exc,
++            )
++            _ner_pipeline = None
++
++    return _ner_pipeline
++
++
++def is_ner_available() -> bool:
++    """True once a load has been attempted and succeeded. Does not trigger
++    a load itself -- callers that want to know before doing real work should
++    call _get_ner_pipeline() (via scan_pii_batch) and check its return."""
++    return _ner_pipeline is not None
++
++
++_NER_BATCH_SIZE = 32
++
++
++def scan_pii_batch(texts: list[str]) -> list[PiiResult]:
++    """QA-batch version of scan_pii: same regex + name-list checks as the
++    live path, PLUS any PERSON entity a NER model finds -- covering names
++    outside the fixed list. Tiered fallback, same pattern as
++    duplicate_service's embedding lookup: try the remote embedder Space's
++    /ner endpoint first, then a local in-process model, then plain
++    regex+list if neither is available. Never raises.
++
++    Runs NER across all texts in one batched pass rather than one row at a
++    time, since this is the whole point of only doing this at QA-batch time:
++    an admin runs it once, not per-submission."""
++    base_results = [scan_pii(text) for text in texts]
++    if not texts:
++        return base_results
++
++    entities_per_text = ner_remote(texts)
++    if entities_per_text is None:
++        entities_per_text = _local_ner_batch(texts)
++
++    if entities_per_text is None:
++        return base_results
++
++    for result, entities in zip(base_results, entities_per_text):
++        person_names = [
++            ent["word"].strip()
++            for ent in entities
++            if ent.get("entity_group") == "PER" and ent.get("word", "").strip()
++        ]
++        new_names = [name for name in person_names if name not in result["matched_terms"]]
++        if new_names:
++            result["matched_terms"] = result["matched_terms"] + new_names
++            result["flagged"] = True
++
++    return base_results
++
++
++def _local_ner_batch(texts: list[str]) -> Optional[list[list[dict]]]:
++    """Fallback tier when the remote embedder Space's /ner is unconfigured
++    or unreachable: load and run the same NER model in-process instead.
++    Returns None (never raises) if that also fails, so the caller degrades
++    to regex+list-only."""
++    ner = _get_ner_pipeline()
++    if ner is None:
++        return None
++
++    all_entities: list[list[dict]] = []
++    try:
++        for start in range(0, len(texts), _NER_BATCH_SIZE):
++            chunk = texts[start : start + _NER_BATCH_SIZE]
++            chunk_entities = ner(chunk)
++            if chunk and chunk_entities and not isinstance(chunk_entities[0], list):
++                chunk_entities = [chunk_entities]
++            all_entities.extend(chunk_entities)
++    except Exception as exc:
++        logger.warning("Local NER inference failed partway through, using regex+list results only: %s", exc)
++        return None
++
++    return all_entities
+diff --git a/backend/services/qa_batch.py b/backend/services/qa_batch.py
+index 44022fa..fda998b 100644
+--- a/backend/services/qa_batch.py
++++ b/backend/services/qa_batch.py
+@@ -5,7 +5,7 @@ import logging
+ from config import BATCH_SIMILARITY_THRESHOLD, CATEGORIES, NON_BIASED_TARGET, QUOTAS
+ from database import fetch_all_submissions, get_supabase
+ from services.duplicate_service import pairwise_duplicates
+-from services.pii_service import scan_pii
++from services.pii_service import scan_pii_batch
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -67,8 +67,9 @@ def run_qa_batch() -> dict:
+     flagged_duplicates = pairwise_duplicates(rows, threshold=BATCH_SIMILARITY_THRESHOLD)
+ 
+     flagged_pii: list[dict] = []
+-    for row in rows:
+-        result = scan_pii(row.get("text") or "")
++    texts = [row.get("text") or "" for row in rows]
++    pii_results = scan_pii_batch(texts)
++    for row, result in zip(rows, pii_results):
+         if result["flagged"]:
+             flagged_pii.append({"id": row["id"], "matched_terms": result["matched_terms"]})
+ 
+diff --git a/backend/utils/auth.py b/backend/utils/auth.py
+index 1acc83c..f67b7be 100644
+--- a/backend/utils/auth.py
++++ b/backend/utils/auth.py
+@@ -33,6 +33,8 @@ class SessionPayload(TypedDict):
+     team_name: str | None
+     judge_id: str | None
+     judge_name: str | None
++    admin_id: str | None
++    admin_name: str | None
+     exp: int
+ 
+ 
+@@ -61,6 +63,8 @@ def create_token(
+     team_name: str | None = None,
+     judge_id: str | None = None,
+     judge_name: str | None = None,
++    admin_id: str | None = None,
++    admin_name: str | None = None,
+     ttl_seconds: int | None = None,
+ ) -> str:
+     secret = _require_secret()
+@@ -70,6 +74,8 @@ def create_token(
+         "team_name": team_name,
+         "judge_id": judge_id,
+         "judge_name": judge_name,
++        "admin_id": admin_id,
++        "admin_name": admin_name,
+         "exp": int(time.time()) + (ttl_seconds or SESSION_TTL_SECONDS),
+     }
+     payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+diff --git a/embedder/app.py b/embedder/app.py
+index f985cf5..0cbc42a 100644
+--- a/embedder/app.py
++++ b/embedder/app.py
+@@ -2,25 +2,37 @@
+ Standalone embedder microservice — optional, separate HF Space.
+ 
+ This holds NO secrets and touches Supabase and no team/session data at all.
+-Its only job: given a list of strings, return sentence embeddings. It exists
+-so the CPU-heavy ML inference used by the main backend's duplicate-check
+-feature can be isolated onto its own compute, restarted/scaled independently,
+-and can't compete with (or block) auth/submit traffic on the main backend's
+-2 vCPUs.
++Its main job: given a list of strings, return sentence embeddings, used by
++the main backend's duplicate-check feature. It also optionally serves
++NER (named-entity recognition), used by the main backend's PII detection
++during the organizer's QA batch. Isolating both onto their own compute means
++neither can compete with (or block) auth/submit traffic on the main
++backend's 2 vCPUs.
+ 
+ The main backend (see ../backend/services/embedder_client.py) calls this
+-over HTTP with a short timeout and a circuit breaker, and falls back to
+-RapidFuzz-only matching if this Space is slow, asleep, or unreachable —
+-so this Space being down NEVER blocks a participant's submission.
++over HTTP with a short timeout and a circuit breaker for /embed (used on
++every /check-submission), and falls back to RapidFuzz-only matching if this
++Space is slow, asleep, or unreachable -- so this Space being down NEVER
++blocks a participant's submission. /ner has a longer timeout and no circuit
++breaker since it's only ever called once per organizer-triggered QA batch,
++not per-request.
+ 
+ Deploy this as its own Docker HF Space (see embedder/Dockerfile). Set
+ EMBEDDER_URL on the main backend to this Space's URL to enable it; leave
+-EMBEDDER_URL unset on the main backend to skip this entirely and load the
+-model in-process there instead (single-Space deploy, simpler, less isolated).
++EMBEDDER_URL unset on the main backend to skip this entirely and load
++models in-process there instead (single-Space deploy, simpler, less
++isolated).
++
++The NER model loads LAZILY on first /ner call, not at startup -- unlike the
++embedding model, which loads eagerly since it's needed on every
++/check-submission. NER is only used for the occasional post-event QA batch,
++so there's no reason to pay its load cost (and hold its memory) on every
++Space restart if it never ends up getting used.
+ """
+ 
+ import logging
+ import os
++import threading
+ from contextlib import asynccontextmanager
+ from typing import Optional
+ 
+@@ -34,6 +46,7 @@ logger = logging.getLogger(__name__)
+ MODEL_NAME = os.environ.get(
+     "MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+ )
++NER_MODEL_NAME = os.environ.get("NER_MODEL_NAME", "debabrata-ai/Nepali-Named-Entity-Tagger-XLM-R")
+ # Simple shared-secret check so this Space isn't an open, anonymous compute
+ # proxy anyone on the internet can hammer. Optional but recommended.
+ EMBEDDER_API_KEY = os.environ.get("EMBEDDER_API_KEY", "")
+@@ -42,6 +55,10 @@ MAX_BATCH_SIZE = int(os.environ.get("MAX_BATCH_SIZE", "64"))
+ 
+ _model: Optional[SentenceTransformer] = None
+ 
++_ner_pipeline = None
++_ner_load_attempted = False
++_ner_lock = threading.Lock()
++
+ 
+ @asynccontextmanager
+ async def lifespan(_app: FastAPI):
+@@ -67,14 +84,68 @@ class EmbedResponse(BaseModel):
+     model: str
+ 
+ 
++class NerRequest(BaseModel):
++    texts: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_SIZE)
++
++
++class NerEntity(BaseModel):
++    entity_group: str
++    word: str
++    score: float
++
++
++class NerResponse(BaseModel):
++    entities: list[list[NerEntity]]  # one list of entities per input text
++    model: str
++    available: bool  # False if the model failed to load -- caller should fall back
++
++
+ def _check_auth(api_key: Optional[str]) -> None:
+     if EMBEDDER_API_KEY and api_key != EMBEDDER_API_KEY:
+         raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key")
+ 
+ 
++def _get_ner_pipeline():
++    """Lazily load the NER pipeline on first /ner call. A failed load is
++    remembered so a slow/broken HF Hub download isn't retried on every call
++    within this process's lifetime -- restart the Space to retry."""
++    global _ner_pipeline, _ner_load_attempted
++
++    with _ner_lock:
++        if _ner_pipeline is not None or _ner_load_attempted:
++            return _ner_pipeline
++
++        _ner_load_attempted = True
++        try:
++            from transformers import (
++                AutoModelForTokenClassification,
++                AutoTokenizer,
++                pipeline,
++            )
++
++            logger.info("Loading NER model: %s (first /ner call, may take a while)", NER_MODEL_NAME)
++            tokenizer = AutoTokenizer.from_pretrained(NER_MODEL_NAME)
++            model = AutoModelForTokenClassification.from_pretrained(NER_MODEL_NAME)
++            _ner_pipeline = pipeline(
++                "ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple"
++            )
++            logger.info("NER model loaded successfully")
++        except Exception as exc:
++            logger.error("Failed to load NER model %s: %s", NER_MODEL_NAME, exc)
++            _ner_pipeline = None
++
++    return _ner_pipeline
++
++
+ @app.get("/health")
+ def health():
+-    return {"status": "ok", "model_loaded": _model is not None, "model_name": MODEL_NAME}
++    return {
++        "status": "ok",
++        "model_loaded": _model is not None,
++        "model_name": MODEL_NAME,
++        "ner_loaded": _ner_pipeline is not None,
++        "ner_load_attempted": _ner_load_attempted,
++    }
+ 
+ 
+ @app.post("/embed", response_model=EmbedResponse)
+@@ -85,3 +156,33 @@ def embed(body: EmbedRequest, x_api_key: Optional[str] = Header(default=None)):
+ 
+     vectors = _model.encode(body.texts, normalize_embeddings=True)
+     return EmbedResponse(embeddings=vectors.tolist(), model=MODEL_NAME)
++
++
++@app.post("/ner", response_model=NerResponse)
++def ner(body: NerRequest, x_api_key: Optional[str] = Header(default=None)):
++    _check_auth(x_api_key)
++
++    pipe = _get_ner_pipeline()
++    if pipe is None:
++        # Not a 503 -- the caller (main backend) treats `available: false` as
++        # "fall back to local/regex", the same graceful degradation used
++        # everywhere else in this tool. A 503 would work too, but this saves
++        # the caller a try/except around a status code for the same outcome.
++        return NerResponse(entities=[[] for _ in body.texts], model=NER_MODEL_NAME, available=False)
++
++    try:
++        raw = pipe(body.texts)
++        if body.texts and raw and not isinstance(raw[0], list):
++            raw = [raw]  # pipeline flattens to a single list for a 1-item input
++        entities = [
++            [
++                NerEntity(entity_group=ent["entity_group"], word=ent["word"], score=float(ent["score"]))
++                for ent in per_text
++                if ent.get("word", "").strip()
++            ]
++            for per_text in raw
++        ]
++        return NerResponse(entities=entities, model=NER_MODEL_NAME, available=True)
++    except Exception as exc:
++        logger.error("NER inference failed: %s", exc)
++        raise HTTPException(status_code=500, detail="NER inference failed") from exc
+diff --git a/embedder/requirements.txt b/embedder/requirements.txt
+index 8c34d6b..b12308b 100644
+--- a/embedder/requirements.txt
++++ b/embedder/requirements.txt
+@@ -1,4 +1,5 @@
+ fastapi==0.115.6
+ uvicorn[standard]==0.34.0
+ sentence-transformers==3.3.1
++transformers>=4.46.0
+ pydantic>=2.7.0
+diff --git a/frontend/src/lib/api.js b/frontend/src/lib/api.js
+index 6003e61..de2d541 100644
+--- a/frontend/src/lib/api.js
++++ b/frontend/src/lib/api.js
+@@ -164,10 +164,25 @@ export function fetchTeamLeaderboard() {
+ // Admin
+ // ---------------------------------------------------------------------------
+ 
+-export async function adminLogin(password) {
+-  const data = await request("/admin/login", { method: "POST", body: { password } });
++export async function adminLogin(email, password) {
++  const data = await request("/admin/login", {
++    method: "POST",
++    body: { email: (email || "").trim(), password },
++  });
+   setAdminToken(data.token);
+-  return true;
++  return { admin_id: data.admin_id, admin_name: data.admin_name };
++}
++
++export function fetchAdmins() {
++  return request("/admin/admins", { token: getAdminToken() });
++}
++
++export function createAdmin(admin_name, email, password) {
++  return request("/admin/admins", {
++    method: "POST",
++    body: { admin_name, email, password },
++    token: getAdminToken(),
++  });
+ }
+ 
+ export function fetchAdminSubmissions() {
+diff --git a/frontend/src/pages/Dashboard.jsx b/frontend/src/pages/Dashboard.jsx
+index 3f0131b..5fd9882 100644
+--- a/frontend/src/pages/Dashboard.jsx
++++ b/frontend/src/pages/Dashboard.jsx
+@@ -13,11 +13,21 @@ import QuotaProgress from "../components/QuotaProgress.jsx";
+ import LoadingCard from "../components/LoadingCard.jsx";
+ import { SkeletonMeters } from "../components/Skeleton.jsx";
+ import Badge from "../components/Badge.jsx";
++import StatusBadge from "../components/StatusBadge.jsx";
+ import EmptyState from "../components/EmptyState.jsx";
+ import TopBar from "../components/TopBar.jsx";
+ 
+ const REFRESH_MS = 15000;
+ 
++function formatSubmittedAt(value) {
++  if (!value) return "—";
++  try {
++    return new Date(value).toLocaleString();
++  } catch {
++    return value;
++  }
++}
++
+ export default function Dashboard() {
+   const { team_name, logout } = useTeam();
+   const [rows, setRows] = useState([]);
+@@ -121,24 +131,76 @@ export default function Dashboard() {
+           message="Head to Submit and save your first labeled sentence."
+         />
+       ) : (
+-        <section className="panel quota-panel">
+-          <h2 className="section-title">Category progress</h2>
+-          <div className="quota-grid">
+-            {CATEGORIES.map((category) => (
++        <>
++          <section className="panel quota-panel">
++            <h2 className="section-title">Category progress</h2>
++            <div className="quota-grid">
++              {CATEGORIES.map((category) => (
++                <QuotaProgress
++                  key={category.key}
++                  label={category.label}
++                  count={counts[category.key]}
++                  required={QUOTAS[category.key]}
++                />
++              ))}
+               <QuotaProgress
+-                key={category.key}
+-                label={category.label}
+-                count={counts[category.key]}
+-                required={QUOTAS[category.key]}
++                label="Non-biased"
++                count={nonBiased}
++                required={NON_BIASED_TARGET}
+               />
+-            ))}
+-            <QuotaProgress
+-              label="Non-biased"
+-              count={nonBiased}
+-              required={NON_BIASED_TARGET}
+-            />
+-          </div>
+-        </section>
++            </div>
++          </section>
++
++          <section className="panel">
++            <h2 className="section-title">Your submissions</h2>
++            <p className="page-sub" style={{ marginTop: -4, marginBottom: 14 }}>
++              Duplicate and PII flags update automatically once an organizer runs
++              the QA batch after submissions close.
++            </p>
++            <div className="table-wrap">
++              <table className="table">
++                <thead>
++                  <tr>
++                    <th>Text</th>
++                    <th>Labels</th>
++                    <th>Duplicate</th>
++                    <th>PII</th>
++                    <th>Submitted</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {rows.map((row) => (
++                    <tr
++                      key={row.id}
++                      className={row.flag_duplicate || row.flag_pii ? "row-flagged" : ""}
++                    >
++                      <td className="td-text nepali">{row.text}</td>
++                      <td className="td-labels">
++                        {CATEGORIES.filter((category) => Number(row[category.key]) === 1).map(
++                          (category) => (
++                            <Badge key={category.key} variant="accent">
++                              {category.label}
++                            </Badge>
++                          )
++                        )}
++                        {CATEGORIES.every((category) => Number(row[category.key]) === 0) && (
++                          <Badge variant="neutral">non-biased</Badge>
++                        )}
++                      </td>
++                      <td>
++                        <StatusBadge active={row.flag_duplicate} variant="dup" />
++                      </td>
++                      <td>
++                        <StatusBadge active={row.flag_pii} variant="warn" />
++                      </td>
++                      <td className="mono-sm">{formatSubmittedAt(row.submitted_at)}</td>
++                    </tr>
++                  ))}
++                </tbody>
++              </table>
++            </div>
++          </section>
++        </>
+       )}
+     </div>
+   );
+diff --git a/frontend/src/pages/Login.jsx b/frontend/src/pages/Login.jsx
+index ef88988..22351b1 100644
+--- a/frontend/src/pages/Login.jsx
++++ b/frontend/src/pages/Login.jsx
+@@ -24,12 +24,14 @@ const ROLE_COPY = {
+     type: "text",
+   },
+   [ROLES.ADMIN]: {
+-    label: "Admin password",
++    label: "Password",
+     placeholder: "admin password",
+     type: "password",
+   },
+ };
+ 
++const EMAIL_ROLES = new Set([ROLES.PARTICIPANT, ROLES.ADMIN]);
++
+ export default function Login() {
+   const [role, setRole] = useState(ROLES.PARTICIPANT);
+   const [email, setEmail] = useState("");
+@@ -63,7 +65,7 @@ export default function Login() {
+     event.preventDefault();
+     setError("");
+ 
+-    if (role === ROLES.PARTICIPANT && !email.trim()) {
++    if (EMAIL_ROLES.has(role) && !email.trim()) {
+       setError("Enter your email address.");
+       return;
+     }
+@@ -89,9 +91,9 @@ export default function Login() {
+         showToast(`Welcome, ${judge.judge_name}`, { type: "success" });
+         navigate("/judge", { replace: true });
+       } else {
+-        await adminLogin(value);
++        const admin = await adminLogin(email, value);
+         clearOtherSessions("admin");
+-        showToast("Welcome back", { type: "success" });
++        showToast(`Welcome back, ${admin.admin_name}`, { type: "success" });
+         navigate("/admin", { replace: true });
+       }
+     } catch (err) {
+@@ -130,7 +132,7 @@ export default function Login() {
+         </div>
+ 
+         <form onSubmit={handleSubmit} className="unified-login-form" noValidate>
+-          {role === ROLES.PARTICIPANT && (
++          {EMAIL_ROLES.has(role) && (
+             <>
+               <label className="field-label" htmlFor="unified-login-email">
+                 Email address
+@@ -158,7 +160,7 @@ export default function Login() {
+             placeholder={copy.placeholder}
+             value={value}
+             onChange={(event) => setValue(event.target.value)}
+-            autoFocus={role !== ROLES.PARTICIPANT}
++            autoFocus={!EMAIL_ROLES.has(role)}
+             autoComplete="off"
+             spellCheck={false}
+             disabled={busy}
+diff --git a/supabase/schema.sql b/supabase/schema.sql
+index 09b365f..1943810 100644
+--- a/supabase/schema.sql
++++ b/supabase/schema.sql
+@@ -174,6 +174,45 @@ where team_id in ('team_01', 'team_02', 'team_03', 'team_04', 'team_05', 'team_d
+ delete from teams
+ where team_id in ('team_01', 'team_02', 'team_03', 'team_04', 'team_05', 'team_dev');
+ 
++-- ---------------------------------------------------------------------------
++-- Admins — multiple named organizer accounts, replacing the single shared
++-- ADMIN_PASSWORD env var. password_hash is a bcrypt hash generated in
++-- Python (backend/services/admin_service.py); Postgres never sees or
++-- compares a plaintext password. Looked up by email via a service-role-only
++-- RPC (verify_admin_email below) that returns the hash for the backend to
++-- check with bcrypt -- the comparison itself happens in application code,
++-- not in SQL, same reasoning as everywhere else in this schema: secrets
++-- never leave service-role-only access, and hashing/verification logic
++-- lives in one place (Python) instead of being duplicated in SQL.
++-- ---------------------------------------------------------------------------
++create table if not exists admins (
++  admin_id       text primary key default ('admin_' || substr(gen_random_uuid()::text, 1, 8)),
++  admin_name     text not null,
++  email          text not null unique,
++  password_hash  text not null,
++  created_at     timestamptz not null default now()
++);
++
++create index if not exists admins_email_idx on admins(lower(email));
++
++alter table admins enable row level security;
++-- No anon policies -- only the backend's service role key can read/write
++-- this table, same as teams/judges/submissions.
++
++create or replace function verify_admin_email(admin_email text)
++returns table (admin_id text, admin_name text, password_hash text)
++language sql
++security definer
++set search_path = public
++as $$
++  select a.admin_id, a.admin_name, a.password_hash
++  from admins a
++  where lower(a.email) = lower(admin_email)
++  limit 1;
++$$;
++
++revoke execute on function verify_admin_email(text) from anon;
++
+ -- ---------------------------------------------------------------------------
+ -- Judging — post-event only. A small pool of judges (separate login from
+ -- teams/admin) label a random sample blind (no original labels shown), so

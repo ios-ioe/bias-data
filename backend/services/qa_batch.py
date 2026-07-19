@@ -5,7 +5,7 @@ import logging
 from config import BATCH_SIMILARITY_THRESHOLD, CATEGORIES, NON_BIASED_TARGET, QUOTAS
 from database import fetch_all_submissions, get_supabase
 from services.duplicate_service import pairwise_duplicates
-from services.pii_service import scan_pii
+from services.pii_service import scan_pii_batch
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,9 @@ def run_qa_batch() -> dict:
     flagged_duplicates = pairwise_duplicates(rows, threshold=BATCH_SIMILARITY_THRESHOLD)
 
     flagged_pii: list[dict] = []
-    for row in rows:
-        result = scan_pii(row.get("text") or "")
+    texts = [row.get("text") or "" for row in rows]
+    pii_results = scan_pii_batch(texts)
+    for row, result in zip(rows, pii_results):
         if result["flagged"]:
             flagged_pii.append({"id": row["id"], "matched_terms": result["matched_terms"]})
 

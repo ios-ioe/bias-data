@@ -1,9 +1,10 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import Nav from "./components/Nav.jsx";
 import LoadingSpinner from "./components/LoadingSpinner.jsx";
 import {
   GuestRoute,
+  JudgeOrAdminRoute,
+  JudgeProtectedRoute,
   ProtectedRoute,
   RootRedirect,
 } from "./components/ProtectedRoute.jsx";
@@ -11,7 +12,9 @@ import {
 const Login = lazy(() => import("./pages/Login.jsx"));
 const Submit = lazy(() => import("./pages/Submit.jsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
+const Leaderboard = lazy(() => import("./pages/Leaderboard.jsx"));
 const Admin = lazy(() => import("./pages/Admin.jsx"));
+const JudgeQueue = lazy(() => import("./pages/JudgeQueue.jsx"));
 
 function PageFallback() {
   return (
@@ -24,7 +27,6 @@ function PageFallback() {
 export default function App() {
   return (
     <div className="app">
-      <Nav />
       <main className="main">
         <Suspense fallback={<PageFallback />}>
           <Routes>
@@ -53,7 +55,24 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/leaderboard"
+              element={
+                <JudgeOrAdminRoute>
+                  <Leaderboard />
+                </JudgeOrAdminRoute>
+              }
+            />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/judge/login" element={<Navigate to="/login" replace />} />
+            <Route
+              path="/judge"
+              element={
+                <JudgeProtectedRoute>
+                  <JudgeQueue />
+                </JudgeProtectedRoute>
+              }
+            />
             <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>
         </Suspense>

@@ -9,6 +9,7 @@ const HF_BASE = (import.meta.env.VITE_HF_SPACE_URL || "").replace(/\/$/, "");
 
 const TEAM_TOKEN_KEY = "bias_tool_team_token";
 const ADMIN_TOKEN_KEY = "bias_tool_admin_token";
+const JUDGE_TOKEN_KEY = "bias_tool_judge_token";
 
 export function getTeamToken() {
   return localStorage.getItem(TEAM_TOKEN_KEY) || "";
@@ -24,6 +25,17 @@ export function getAdminToken() {
 export function setAdminToken(token) {
   if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
   else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+}
+
+// Judges are a separate identity from teams/admin, entirely post-event.
+// Session stored the same way as a team's (localStorage), since a judge
+// might reasonably take a break and come back mid-review-session.
+export function getJudgeToken() {
+  return localStorage.getItem(JUDGE_TOKEN_KEY) || "";
+}
+export function setJudgeToken(token) {
+  if (token) localStorage.setItem(JUDGE_TOKEN_KEY, token);
+  else localStorage.removeItem(JUDGE_TOKEN_KEY);
 }
 
 async function request(path, { method = "GET", body, token, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
@@ -55,6 +67,24 @@ async function request(path, { method = "GET", body, token, timeoutMs = DEFAULT_
       } catch {
         detail = await res.text().catch(() => "");
       }
+
+      if (res.status === 401 && token) {
+        // A previously-valid token is now rejected (expired, or the
+        // backend's SESSION_SECRET was rotated) -- broadcast which kind of
+        // session it was so TeamContext / Admin can clear the stale
+        // session and send the user back to a real login screen, instead
+        // of leaving them stuck on a page that will keep 401ing forever.
+        window.dispatchEvent(
+          new CustomEvent("bias-tool:unauthorized", {
+            detail: {
+              isTeamToken: token === getTeamToken(),
+              isAdminToken: token === getAdminToken(),
+              isJudgeToken: token === getJudgeToken(),
+            },
+          })
+        );
+      }
+
       throw new Error(detail || `${path} failed (${res.status})`);
     }
 
@@ -85,12 +115,19 @@ export async function checkHealth() {
 // Team auth + submissions
 // ---------------------------------------------------------------------------
 
-export async function loginWithAccessCode(accessCode) {
-  const code = accessCode.trim();
+export async function loginWithAccessCode(email, accessCode) {
+  const trimmedEmail = (email || "").trim();
+  const code = (accessCode || "").trim();
+  if (!trimmedEmail) {
+    throw new Error("Enter your email address.");
+  }
   if (!code) {
     throw new Error("Enter your team access code.");
   }
-  const data = await request("/login", { method: "POST", body: { access_code: code } });
+  const data = await request("/login", {
+    method: "POST",
+    body: { email: trimmedEmail, access_code: code },
+  });
   setTeamToken(data.token);
   return { team_id: data.team_id, team_name: data.team_name };
 }
@@ -113,14 +150,39 @@ export function fetchMyCount() {
   return request("/my-count", { token: getTeamToken() }).then((r) => r.count);
 }
 
+// Standings (rank, team name, completion %) visible to organizers and
+// judges only -- see routers/leaderboard.py, gated by require_admin_or_judge.
+// Uses whichever session is active; judge takes priority since a judge is
+// never also logged in as admin in the same browser tab in practice, but
+// admin access should still work if opened from the Admin panel.
+export function fetchTeamLeaderboard() {
+  const token = getJudgeToken() || getAdminToken();
+  return request("/leaderboard", { token });
+}
+
 // ---------------------------------------------------------------------------
 // Admin
 // ---------------------------------------------------------------------------
 
-export async function adminLogin(password) {
-  const data = await request("/admin/login", { method: "POST", body: { password } });
+export async function adminLogin(email, password) {
+  const data = await request("/admin/login", {
+    method: "POST",
+    body: { email: (email || "").trim(), password },
+  });
   setAdminToken(data.token);
-  return true;
+  return { admin_id: data.admin_id, admin_name: data.admin_name };
+}
+
+export function fetchAdmins() {
+  return request("/admin/admins", { token: getAdminToken() });
+}
+
+export function createAdmin(admin_name, email, password) {
+  return request("/admin/admins", {
+    method: "POST",
+    body: { admin_name, email, password },
+    token: getAdminToken(),
+  });
 }
 
 export function fetchAdminSubmissions() {
@@ -156,6 +218,56 @@ export function createTeam(team_name, member_emails) {
     method: "POST",
     body: { team_name, member_emails },
     token: getAdminToken(),
+  });
+}
+
+export function fetchJudges() {
+  return request("/admin/judges", { token: getAdminToken() });
+}
+
+export function createJudge(judge_name) {
+  return request("/admin/judges", {
+    method: "POST",
+    body: { judge_name },
+    token: getAdminToken(),
+  });
+}
+
+export function sampleForJudging(per_team = 10) {
+  return request("/admin/judge-sample", {
+    method: "POST",
+    body: { per_team },
+    token: getAdminToken(),
+  });
+}
+
+export function fetchJudgeReport() {
+  return request("/admin/judge-report", { token: getAdminToken() });
+}
+
+// ---------------------------------------------------------------------------
+// Judge (post-event blind review) — separate identity from teams/admin
+// ---------------------------------------------------------------------------
+
+export async function judgeLogin(accessCode) {
+  const code = accessCode.trim();
+  if (!code) {
+    throw new Error("Enter your judge access code.");
+  }
+  const data = await request("/judge/login", { method: "POST", body: { access_code: code } });
+  setJudgeToken(data.token);
+  return { judge_id: data.judge_id, judge_name: data.judge_name };
+}
+
+export function fetchJudgeQueue() {
+  return request("/judge/queue", { token: getJudgeToken() });
+}
+
+export function submitJudgeLabel(submission_id, labels) {
+  return request("/judge/label", {
+    method: "POST",
+    body: { submission_id, ...labels },
+    token: getJudgeToken(),
   });
 }
 

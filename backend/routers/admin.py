@@ -11,9 +11,24 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 import database
+import random
+
 from config import CATEGORIES, NON_BIASED_TARGET, QUOTAS
-from models.schemas import CreateTeamRequest, MarkReviewedRequest, TeamResponse
+from models.schemas import (
+    AdminAccountResponse,
+    CreateAdminRequest,
+    CreateJudgeRequest,
+    CreateTeamRequest,
+    JudgeResponse,
+    MarkReviewedRequest,
+    SampleForJudgingRequest,
+    SampleForJudgingResponse,
+    TeamResponse,
+)
+from services.admin_service import hash_password
 from services.email_service import send_team_access_code
+from services.judge_service import build_judge_report
+from services.leaderboard_service import build_leaderboard
 from services.qa_batch import run_qa_batch
 from utils.auth import require_admin
 
@@ -26,7 +41,7 @@ AdminSession = Annotated[dict, Depends(require_admin)]
 _ADMIN_COLUMNS = (
     "id,team_id,text,"
     + ",".join(f'"{c}"' if c[0].isupper() else c for c in CATEGORIES)
-    + ",source_platform,source_date,submitted_at,flag_duplicate,flag_pii,judge_reviewed"
+    + ",source_platform,comment,submitted_at,flag_duplicate,flag_pii,judge_reviewed"
 )
 
 
@@ -38,24 +53,12 @@ def all_submissions(_: AdminSession):
 
 @router.get("/leaderboard")
 def leaderboard(_: AdminSession):
-    """Per-team credited counts (excludes rows flagged as duplicates), ranked.
-    This replaces the old public /leaderboard route — only organizers can see
-    team rankings now."""
-    rows = database.fetch_all_submissions(
-        "team_id,flag_duplicate," + ",".join(f'"{c}"' if c[0].isupper() else c for c in CATEGORIES)
-    )
-    totals: dict[str, dict] = {}
-    for row in rows:
-        team_id = row.get("team_id")
-        if not team_id:
-            continue
-        bucket = totals.setdefault(team_id, {"team_id": team_id, "total": 0, "credited": 0})
-        bucket["total"] += 1
-        if not row.get("flag_duplicate"):
-            bucket["credited"] += 1
-
-    ranked = sorted(totals.values(), key=lambda r: r["credited"], reverse=True)
-    return ranked
+    """Full ranked team standings — team_id, team_name, raw + credited
+    submission counts, and quota completion %, ranked by completion % (see
+    services/leaderboard_service). Every team is included, even ones with
+    zero submissions so far. A trimmed rank/name/% view of the same ranking
+    is also available to every logged-in team at GET /leaderboard."""
+    return build_leaderboard(force_refresh=True)
 
 
 @router.post("/mark-reviewed")
@@ -77,7 +80,7 @@ def export_json(_: AdminSession):
     export_keys = [
         "team_id", "text", "gender", "religional", "caste", "religion",
         "appearence", "socialstatus", "amiguity", "political", "Age",
-        "Disablity", "source_platform", "source_date", "submitted_at",
+        "Disablity", "source_platform", "comment", "submitted_at",
         "flag_duplicate", "flag_pii", "judge_reviewed",
     ]
     return [{key: row.get(key) for key in export_keys} for row in rows]
@@ -167,3 +170,112 @@ def add_team(body: CreateTeamRequest, _: AdminSession):
 
     logger.info("Admin created team team_id=%s email_sent=%s", team_id, email_sent)
     return TeamResponse(**row, email_sent=email_sent)
+
+
+# --- Judging (post-event blind review) --------------------------------------
+
+
+@router.get("/judges", response_model=list[JudgeResponse])
+def get_judges(_: AdminSession):
+    """List all judges with their access codes, so an organizer can hand them
+    out. Same pattern as GET /admin/teams."""
+    return database.list_judges()
+
+
+@router.post("/judges", response_model=JudgeResponse)
+def add_judge(body: CreateJudgeRequest, _: AdminSession):
+    """Create a judge with a freshly generated access code. Judges are a
+    separate identity from teams/admin -- this code only ever grants access
+    to GET /judge/queue and POST /judge/label, never submission or admin
+    routes."""
+    slug = _slugify(body.judge_name)
+
+    row = None
+    last_exc: Exception | None = None
+    for _attempt in range(_MAX_ACCESS_CODE_ATTEMPTS):
+        access_code = _generate_access_code(slug)
+        try:
+            row = database.create_judge(body.judge_name.strip(), access_code)
+            break
+        except Exception as exc:  # likely a unique constraint hit on access_code
+            last_exc = exc
+            logger.warning("Access code collision creating judge %s, retrying: %s", body.judge_name, exc)
+
+    if row is None:
+        logger.error("Failed to create judge after %d attempts: %s", _MAX_ACCESS_CODE_ATTEMPTS, last_exc)
+        raise HTTPException(status_code=500, detail="Failed to create judge — access_code collision, please retry.")
+
+    logger.info("Admin created judge judge_id=%s", row["judge_id"])
+    return JudgeResponse(**row)
+
+
+# --- Admin account management ------------------------------------------------
+# The very FIRST admin account is created via the unauthenticated
+# POST /admin/bootstrap (see routers/auth.py), gated by ADMIN_BOOTSTRAP_SECRET.
+# Every admin account after that is created here, by an already-logged-in
+# admin -- same "authenticated action creates the next credential" pattern
+# as team/judge creation.
+
+
+@router.get("/admins", response_model=list[AdminAccountResponse])
+def get_admins(_: AdminSession):
+    """List all admin accounts (name + email only, never password hashes)."""
+    return database.list_admins()
+
+
+@router.post("/admins", response_model=AdminAccountResponse)
+def add_admin(body: CreateAdminRequest, _: AdminSession):
+    """Create another admin account. Requires being logged in as an admin
+    already -- there's no open signup for admin access."""
+    password_hash = hash_password(body.password)
+    try:
+        row = database.create_admin(body.admin_name.strip(), body.email.strip(), password_hash)
+    except Exception as exc:
+        logger.warning("Failed to create admin %s (likely duplicate email): %s", body.email, exc)
+        raise HTTPException(status_code=400, detail="That email is already registered as an admin.")
+
+    logger.info("Admin created another admin account admin_id=%s", row["admin_id"])
+    return AdminAccountResponse(admin_id=row["admin_id"], admin_name=row["admin_name"], email=row["email"])
+
+
+@router.post("/judge-sample", response_model=SampleForJudgingResponse)
+def sample_for_judging(body: SampleForJudgingRequest, _: AdminSession):
+    """Randomly pick `per_team` submissions from EACH team (not a flat pool)
+    and mark them for judging. Stratified per team so every team gets a
+    fair, comparable sample regardless of how many teams there are -- a flat
+    random pick across all submissions could easily leave some teams with
+    zero items sampled by chance. Teams with fewer unsampled/non-duplicate
+    rows than `per_team` just get all of what they have (never an error).
+    Intended to run once, after the event closes and the QA batch
+    (POST /admin/qa-batch) has already flagged duplicates."""
+    candidates_by_team = database.fetch_unsampled_submission_ids_by_team()
+
+    chosen: list[str] = []
+    teams_sampled = 0
+    teams_skipped = 0
+    for team_id, ids in candidates_by_team.items():
+        if not ids:
+            teams_skipped += 1
+            continue
+        take = min(body.per_team, len(ids))
+        chosen.extend(random.sample(ids, k=take))
+        teams_sampled += 1
+
+    if chosen:
+        database.mark_sampled_for_judging(chosen)
+
+    logger.info(
+        "Admin sampled %d submissions for judging across %d teams (%d skipped, no candidates)",
+        len(chosen), teams_sampled, teams_skipped,
+    )
+    return SampleForJudgingResponse(
+        sampled=len(chosen), teams_sampled=teams_sampled, teams_skipped_insufficient=teams_skipped
+    )
+
+
+@router.get("/judge-report")
+def judge_report(_: AdminSession):
+    """Compares each judge's blind label against the participant's original
+    label, per category, for every sampled submission. Admin-only -- this is
+    the one place original labels and judge labels are ever shown together."""
+    return build_judge_report()

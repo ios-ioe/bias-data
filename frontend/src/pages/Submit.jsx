@@ -11,6 +11,7 @@ import { CATEGORIES, SOURCE_PLATFORMS } from "../config/quotas.js";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import LoadingSpinner from "../components/LoadingSpinner.jsx";
 import Badge from "../components/Badge.jsx";
+import TopBar from "../components/TopBar.jsx";
 import {
   DuplicateWarningContent,
   PiiWarningContent,
@@ -35,13 +36,13 @@ function validateForm(text) {
 }
 
 export default function Submit() {
-  const { team_id, team_name } = useTeam();
+  const { team_id, team_name, logout } = useTeam();
   const { showToast } = useToast();
 
   const [text, setText] = useState("");
   const [labels, setLabels] = useState(emptyLabels);
   const [platform, setPlatform] = useState("");
-  const [date, setDate] = useState("");
+  const [comment, setComment] = useState("");
 
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -97,7 +98,7 @@ export default function Submit() {
     setText("");
     setLabels(emptyLabels());
     setPlatform("");
-    setDate("");
+    setComment("");
     setCheckResult(null);
     setFlowError("");
     setValidationError("");
@@ -114,7 +115,7 @@ export default function Submit() {
         CATEGORIES.map((category) => [category.key, labels[category.key]])
       ),
       source_platform: platform || null,
-      source_date: date || null,
+      comment: comment.trim() || null,
       flag_duplicate: Boolean(checkOutcome?.duplicate?.flagged),
       flag_pii: Boolean(checkOutcome?.pii?.flagged),
     };
@@ -199,6 +200,14 @@ export default function Submit() {
 
   return (
     <div className="submit">
+      <TopBar
+        label={team_name}
+        links={[
+          { to: "/submit", text: "Submit" },
+          { to: "/dashboard", text: "Dashboard" },
+        ]}
+        onSignOut={logout}
+      />
       <div className="submit-head">
         <div>
           <h1 className="page-title">Submit labeled sentence</h1>
@@ -281,15 +290,16 @@ export default function Submit() {
               </select>
             </div>
             <div className="source-field">
-              <label className="field-label" htmlFor="source-date">
-                Source date <span className="opt">optional</span>
+              <label className="field-label" htmlFor="source-comment">
+                Comment <span className="opt">optional</span>
               </label>
               <input
-                id="source-date"
-                type="date"
+                id="source-comment"
+                type="text"
                 className="input"
-                value={date}
-                onChange={(event) => setDate(event.target.value)}
+                placeholder="Why did you mark this as biased / non-biased?"
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
                 disabled={busy}
               />
             </div>

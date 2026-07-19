@@ -10,14 +10,17 @@ with the anon key for CRUD. Routes:
   POST /submit                — insert a submission for the logged-in team
   GET  /my-submissions        — the logged-in team's own rows only
   GET  /my-count               — the logged-in team's own submission count
-  GET  /admin/leaderboard      — admin-only: ranked team standings
+  GET  /leaderboard            — any logged-in team: rank/name/% only, no
+                                  team_id or raw counts of other teams
+  GET  /admin/leaderboard      — admin-only: full ranked team standings
   GET  /admin/submissions      — admin-only: full table
   POST /admin/qa-batch         — admin-only: organizer batch QA after close
   POST /admin/mark-reviewed    — admin-only
   GET  /admin/export           — admin-only: JSON export
 
-The Supabase service role key and SESSION_SECRET/ADMIN_PASSWORD live only here,
-never in the browser.
+The Supabase service role key and SESSION_SECRET live only here, never in the
+browser. Admin credentials now live in Supabase (hashed), not an env var --
+see routers/auth.py for /admin/login and the one-time /admin/bootstrap.
 """
 
 import logging
@@ -30,10 +33,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
+from config import CORS_ALLOWED_ORIGINS, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
 from routers.admin import router as admin_router
 from routers.auth import router as auth_router
 from routers.health import router as health_router
+from routers.judge import router as judge_router
+from routers.leaderboard import router as leaderboard_router
 from routers.submission import router as submission_router
 from services.duplicate_service import warmup_model
 from utils.exceptions import AppError
@@ -63,7 +68,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -106,6 +111,13 @@ _RATE_LIMITS = {
     # still meaningfully slows down brute-forcing a single access code
     # (100,000 possible 5-digit suffixes) without throttling a real crowd.
     "/login": (40, 60.0),
+    # Admin/judge logins are a much smaller pool of legitimate users than
+    # the whole participant crowd, so these can (and should) be much
+    # stricter -- there's no shared-venue-WiFi excuse for hundreds of
+    # attempts/minute against an admin password or judge code.
+    "/admin/login": (10, 60.0),
+    "/admin/bootstrap": (5, 300.0),
+    "/judge/login": (10, 60.0),
     # /check-submission IS authenticated (team Bearer token) even though it
     # doesn't require it structurally -- key by team when present so one
     # team's rapid typing/editing can't eat into another team's quota on
@@ -139,6 +151,8 @@ async def rate_limit_middleware(request: Request, call_next):
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(submission_router)
+app.include_router(leaderboard_router)
+app.include_router(judge_router)
 app.include_router(admin_router)
 
 

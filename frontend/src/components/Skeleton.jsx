@@ -27,6 +27,25 @@ export function SkeletonMeters({ count = 6 }) {
   );
 }
 
+export function SkeletonBoard({ count = 6 }) {
+  return (
+    <ul className="board-list" aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => (
+        <li key={index} className="board-row">
+          <span className="skeleton skeleton-rank" />
+          <div className="board-main">
+            <div className="board-name-line">
+              <Skeleton className="skeleton-sm" />
+              <Skeleton className="skeleton-xs" />
+            </div>
+            <Skeleton className="skeleton-bar" />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function SkeletonTable({ rows = 5, cols = 4 }) {
   return (
     <div className="table-wrap">

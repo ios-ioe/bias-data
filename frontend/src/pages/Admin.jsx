@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Navigate } from "react-router-dom";
 import {
-  adminLogin,
+  createJudge,
   createTeam,
   downloadJson,
   fetchAdminSubmissions,
   fetchExportRows,
+  fetchJudgeReport,
+  fetchJudges,
   fetchLeaderboard,
   fetchTeams,
   getAdminToken,
   runQaBatch,
+  sampleForJudging,
+  setAdminToken,
   updateJudgeReviewed,
 } from "../lib/api.js";
 import { useToast } from "../context/ToastContext.jsx";
@@ -19,21 +24,19 @@ import AdminFilters from "../components/AdminFilters.jsx";
 import SubmissionTable from "../components/SubmissionTable.jsx";
 import QaBatchReport from "../components/QaBatchReport.jsx";
 import LoadingSpinner from "../components/LoadingSpinner.jsx";
+import TopBar from "../components/TopBar.jsx";
+import Leaderboard from "./Leaderboard.jsx";
 
 const DISPLAY_LIMIT = 400;
-const TABS = { SUBMISSIONS: "submissions", LEADERBOARD: "leaderboard", TEAMS: "teams" };
+const TABS = { SUBMISSIONS: "submissions", LEADERBOARD: "leaderboard", TEAMS: "teams", JUDGING: "judging" };
 
 export default function Admin() {
   const { showToast } = useToast();
 
-  // The admin "password gate" now calls the backend, which checks ADMIN_PASSWORD
-  // server-side and returns a signed admin token — the password itself, and the
-  // authorization decision, never live in the browser bundle like the old
-  // VITE_ADMIN_PASSWORD did.
+  // Login itself now happens on the unified /login page (Participant /
+  // Judge / Admin tabs) -- this page only checks whether an admin token is
+  // already present and redirects to /login if not.
   const [authed, setAuthed] = useState(() => Boolean(getAdminToken()));
-  const [pass, setPass] = useState("");
-  const [loginBusy, setLoginBusy] = useState(false);
-  const [loginError, setLoginError] = useState("");
 
   const [tab, setTab] = useState(TABS.SUBMISSIONS);
   const [rows, setRows] = useState([]);
@@ -76,6 +79,19 @@ export default function Admin() {
     if (authed) load();
   }, [authed, load]);
 
+  // If the admin session token gets rejected (TTL expired, or the backend's
+  // SESSION_SECRET was rotated since login), drop back to /login instead of
+  // leaving every tab silently failing with stale data on screen.
+  useEffect(() => {
+    function handleUnauthorized(event) {
+      if (event.detail?.isAdminToken) {
+        setAuthed(false);
+      }
+    }
+    window.addEventListener("bias-tool:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("bias-tool:unauthorized", handleUnauthorized);
+  }, []);
+
   const loadTeams = useCallback(async () => {
     setTeamsLoading(true);
     try {
@@ -92,6 +108,79 @@ export default function Admin() {
   useEffect(() => {
     if (authed && tab === TABS.TEAMS) loadTeams();
   }, [authed, tab, loadTeams]);
+
+  const [judgesList, setJudgesList] = useState([]);
+  const [judgesLoading, setJudgesLoading] = useState(false);
+  const [judgesError, setJudgesError] = useState("");
+  const [newJudgeName, setNewJudgeName] = useState("");
+  const [creatingJudge, setCreatingJudge] = useState(false);
+  const [sampleCount, setSampleCount] = useState(10);
+  const [samplingBusy, setSamplingBusy] = useState(false);
+  const [judgeReport, setJudgeReport] = useState(null);
+  const [judgeReportBusy, setJudgeReportBusy] = useState(false);
+
+  const loadJudging = useCallback(async () => {
+    setJudgesLoading(true);
+    try {
+      const data = await fetchJudges();
+      setJudgesList(data);
+      setJudgesError("");
+    } catch (err) {
+      setJudgesError(err.message || "Failed to load judges.");
+    } finally {
+      setJudgesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authed && tab === TABS.JUDGING) loadJudging();
+  }, [authed, tab, loadJudging]);
+
+  async function handleCreateJudge(event) {
+    event.preventDefault();
+    if (!newJudgeName.trim()) return;
+    setCreatingJudge(true);
+    try {
+      await createJudge(newJudgeName.trim());
+      setNewJudgeName("");
+      await loadJudging();
+      showToast("Judge added", { type: "success" });
+    } catch (err) {
+      showToast(err.message || "Failed to add judge.", { type: "error" });
+    } finally {
+      setCreatingJudge(false);
+    }
+  }
+
+  async function handleSample() {
+    setSamplingBusy(true);
+    try {
+      const result = await sampleForJudging(sampleCount);
+      showToast(
+        `Sampled ${result.sampled} submissions across ${result.teams_sampled} teams` +
+          (result.teams_skipped_insufficient
+            ? ` (${result.teams_skipped_insufficient} teams had none available)`
+            : ""),
+        { type: "success" }
+      );
+    } catch (err) {
+      showToast(err.message || "Failed to sample submissions.", { type: "error" });
+    } finally {
+      setSamplingBusy(false);
+    }
+  }
+
+  async function handleLoadReport() {
+    setJudgeReportBusy(true);
+    try {
+      const data = await fetchJudgeReport();
+      setJudgeReport(data);
+    } catch (err) {
+      showToast(err.message || "Failed to load judge report.", { type: "error" });
+    } finally {
+      setJudgeReportBusy(false);
+    }
+  }
 
   const trimmedEmails = newTeamEmails.map((e) => e.trim()).filter(Boolean);
   const canCreateTeam = newTeamName.trim() && trimmedEmails.length >= 2 && trimmedEmails.length <= 4;
@@ -140,20 +229,6 @@ export default function Admin() {
       setTimeout(() => setCopiedCode(""), 1500);
     } catch {
       showToast("Could not copy — select and copy manually.", { type: "error" });
-    }
-  }
-
-  async function handleLogin(event) {
-    event.preventDefault();
-    setLoginBusy(true);
-    setLoginError("");
-    try {
-      await adminLogin(pass);
-      setAuthed(true);
-    } catch (err) {
-      setLoginError(err.message || "Wrong password.");
-    } finally {
-      setLoginBusy(false);
     }
   }
 
@@ -223,47 +298,21 @@ export default function Admin() {
   }
 
   if (!authed) {
-    return (
-      <div className="login-wrap">
-        <div className="login-card">
-          <div className="login-eyebrow">Organizer only</div>
-          <h1 className="login-title">Admin</h1>
-          <form className="login-form" onSubmit={handleLogin}>
-            <label className="field-label" htmlFor="admin-pass">
-              Admin password
-            </label>
-            <input
-              id="admin-pass"
-              className="input login-input"
-              type="password"
-              placeholder="admin password"
-              value={pass}
-              onChange={(event) => setPass(event.target.value)}
-              autoFocus
-              disabled={loginBusy}
-            />
-            <button className="btn btn-primary btn-block" type="submit" disabled={loginBusy}>
-              {loginBusy ? "Checking…" : "Unlock"}
-            </button>
-          </form>
-          {loginBusy && (
-            <div className="login-spinner">
-              <LoadingSpinner label="Verifying…" inline />
-            </div>
-          )}
-          {loginError && <div className="alert alert-error">{loginError}</div>}
-        </div>
-      </div>
-    );
+    return <Navigate to="/login" replace />;
   }
 
   return (
     <div className="admin">
+      <TopBar
+        label="Admin"
+        onSignOut={() => setAdminToken(null)}
+      />
       <div className="submit-head">
         <div>
           <h1 className="page-title">Admin</h1>
           <p className="page-sub">
-            {rows.length} submissions total · leaderboard visible to organizers only
+            {rows.length} submissions total · leaderboard is visible to organizers
+            and judges only
           </p>
         </div>
         <div className="admin-actions">
@@ -312,6 +361,13 @@ export default function Admin() {
           onClick={() => setTab(TABS.TEAMS)}
         >
           Teams
+        </button>
+        <button
+          type="button"
+          className={`tab ${tab === TABS.JUDGING ? "tab-active" : ""}`}
+          onClick={() => setTab(TABS.JUDGING)}
+        >
+          Judging
         </button>
       </div>
 
@@ -422,34 +478,199 @@ export default function Admin() {
           )}
         </>
       ) : tab === TABS.LEADERBOARD ? (
-        loading ? (
-          <SkeletonTable rows={6} cols={3} />
-        ) : board.length === 0 ? (
-          <EmptyState title="No teams yet" message="Teams will appear here once they start submitting." />
-        ) : (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Team ID</th>
-                  <th>Credited submissions</th>
-                  <th>Total submissions (incl. duplicates)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {board.map((team, index) => (
-                  <tr key={team.team_id}>
-                    <td>{index + 1}</td>
-                    <td className="mono-sm">{team.team_id}</td>
-                    <td>{team.credited}</td>
-                    <td className="muted">{team.total}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <Leaderboard />
+      ) : tab === TABS.JUDGING ? (
+        <>
+          <div className="panel" style={{ marginBottom: "1rem" }}>
+            <h3 style={{ marginTop: 0 }}>1. Add judges</h3>
+            <p className="muted">
+              Judges are a separate login from teams/admin. They only ever see
+              sentence text — never the participant's labels, team name, or
+              team_id.
+            </p>
+            <form
+              onSubmit={handleCreateJudge}
+              style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end", flexWrap: "wrap" }}
+            >
+              <div>
+                <label className="field-label" htmlFor="new-judge-name">
+                  Judge name
+                </label>
+                <input
+                  id="new-judge-name"
+                  className="input"
+                  placeholder="e.g. Alina Shrestha"
+                  value={newJudgeName}
+                  onChange={(event) => setNewJudgeName(event.target.value)}
+                  disabled={creatingJudge}
+                />
+              </div>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={creatingJudge || !newJudgeName.trim()}
+              >
+                {creatingJudge ? "Adding…" : "Add judge"}
+              </button>
+            </form>
+
+            {judgesError && <div className="alert alert-error">{judgesError}</div>}
+
+            {judgesLoading ? (
+              <SkeletonTable rows={2} cols={3} />
+            ) : judgesList.length === 0 ? (
+              <EmptyState title="No judges yet" message="Add your first judge above." />
+            ) : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Access code</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {judgesList.map((judge) => (
+                      <tr key={judge.judge_id}>
+                        <td>{judge.judge_name}</td>
+                        <td className="mono-sm">{judge.access_code}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => copyCode(judge.access_code)}
+                          >
+                            {copiedCode === judge.access_code ? "Copied!" : "Copy code"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )
+
+          <div className="panel" style={{ marginBottom: "1rem" }}>
+            <h3 style={{ marginTop: 0 }}>2. Sample submissions for judging</h3>
+            <p className="muted">
+              Picks this many submissions from EACH team (not a flat total),
+              so every team gets a fair, comparable sample. Run this once,
+              after the event closes and after you've run the QA batch above
+              (so duplicates are already flagged and excluded). Re-running
+              only tops up unsampled rows per team — it never re-samples
+              something already picked.
+            </p>
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end" }}>
+              <div>
+                <label className="field-label" htmlFor="sample-count">
+                  Samples per team
+                </label>
+                <input
+                  id="sample-count"
+                  type="number"
+                  className="input"
+                  style={{ width: 100 }}
+                  min={1}
+                  max={100}
+                  value={sampleCount}
+                  onChange={(event) => setSampleCount(Number(event.target.value) || 1)}
+                  disabled={samplingBusy}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSample}
+                disabled={samplingBusy}
+              >
+                {samplingBusy ? "Sampling…" : "Sample now"}
+              </button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3 style={{ marginTop: 0 }}>3. Judge report</h3>
+            <p className="muted">
+              "Correct" means the judge's label matched the participant's on
+              every category for that row. Refresh after judges finish
+              labeling — use the Items list below the table to see the exact
+              category-by-category breakdown for any row.
+            </p>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleLoadReport}
+              disabled={judgeReportBusy}
+            >
+              {judgeReportBusy ? "Loading…" : "Load / refresh report"}
+            </button>
+
+            {judgeReport && (
+              <div style={{ marginTop: "1rem" }}>
+                {judgeReport.teams.length > 0 && (
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Team Name</th>
+                          <th>Total Data Collected</th>
+                          <th>Sample Given to Judges</th>
+                          <th>Correct Sample by Judge</th>
+                          <th>Incorrect Sample by Judge</th>
+                          <th>Flagged (duplicate)</th>
+                          <th>Flagged (PII)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {judgeReport.teams.map((row) => (
+                          <tr key={row.team_id}>
+                            <td>{row.team_name}</td>
+                            <td>{row.total_collected}</td>
+                            <td>{row.sample_given}</td>
+                            <td>{row.correct_by_judge}</td>
+                            <td>{row.incorrect_by_judge}</td>
+                            <td>{row.flagged_duplicate}</td>
+                            <td>{row.flagged_pii}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {judgeReport.items.length > 0 && (
+                  <details style={{ marginTop: "1rem" }}>
+                    <summary>Item-by-item breakdown ({judgeReport.items.length})</summary>
+                    <div className="table-wrap" style={{ marginTop: "0.5rem" }}>
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>Team ID</th>
+                            <th>Text</th>
+                            <th>Judge</th>
+                            <th>All match?</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {judgeReport.items.map((item) => (
+                            <tr key={`${item.submission_id}-${item.judge_id}`}>
+                              <td className="mono-sm">{item.team_id}</td>
+                              <td className="nepali">{item.text}</td>
+                              <td>{item.judge_name}</td>
+                              <td>{item.all_categories_match ? "Yes" : "No"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
+        </>
       ) : (
         <>
           <QaBatchReport report={report} onMarkReviewed={markReviewed} reviewingId={reviewBusyId} />
