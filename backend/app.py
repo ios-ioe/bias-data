@@ -168,3 +168,35 @@ async def unhandled_exception_handler(_request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal server error"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Gradio SDK entrypoint.
+#
+# HF Spaces recently locked the Docker SDK behind a paid plan; the Gradio SDK
+# is still free (CPU Basic). Nothing above this changes -- `app` is still a
+# plain FastAPI instance with all routers/middleware/exception handlers
+# attached. We just mount a one-widget Gradio UI onto it at /ui (satisfying
+# HF's requirement that a Gradio SDK Space serve a Gradio app) and run the
+# whole thing with uvicorn on port 7860, same as the old Dockerfile CMD did.
+#
+# All existing routes (/login, /submit, /admin/*, /health, /docs, ...) are
+# untouched and still live at the paths the frontend already calls.
+# ---------------------------------------------------------------------------
+import gradio as gr  # noqa: E402
+
+with gr.Blocks(title="Nepali Bias Data Tool — API") as _ui:
+    gr.Markdown(
+        "## Backend is running\n"
+        "This Space hosts the API only — there's no interactive UI here.\n\n"
+        "- `GET /health` — status check\n"
+        "- `GET /docs` — OpenAPI schema\n\n"
+        "The frontend (Vercel) talks to this Space's REST endpoints directly."
+    )
+
+app = gr.mount_gradio_app(app, _ui, path="/ui")
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=7860)

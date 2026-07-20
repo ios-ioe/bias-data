@@ -186,3 +186,24 @@ def ner(body: NerRequest, x_api_key: Optional[str] = Header(default=None)):
     except Exception as exc:
         logger.error("NER inference failed: %s", exc)
         raise HTTPException(status_code=500, detail="NER inference failed") from exc
+
+
+# ---------------------------------------------------------------------------
+# Gradio SDK entrypoint (see ../backend/app.py for the full rationale: HF's
+# Docker SDK is now paid, Gradio SDK is still free). No routes above change.
+# ---------------------------------------------------------------------------
+import gradio as gr  # noqa: E402
+
+with gr.Blocks(title="Bias Data Tool — Embedder") as _ui:
+    gr.Markdown(
+        "## Embedder microservice\n"
+        "Internal-only. Called by the main backend Space for `/embed` and "
+        "`/ner`. See `GET /health` for status."
+    )
+
+app = gr.mount_gradio_app(app, _ui, path="/ui")
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=7860)

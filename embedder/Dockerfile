@@ -1,3 +1,5 @@
+# NOTE: unused as of the switch to sdk: gradio (see app.py's Gradio mount
+# and SPACE_README.md). Kept only for reference.
 FROM python:3.11-slim
 
 RUN useradd -m -u 1000 user

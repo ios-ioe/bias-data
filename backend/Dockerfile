@@ -1,3 +1,7 @@
+# NOTE: unused as of the switch to sdk: gradio (HF Docker SDK is now a paid
+# feature; Gradio SDK is still free CPU-Basic). Kept only for local
+# reference / in case you move back to Docker later. See app.py's Gradio
+# mount + SPACE_README.md for the current deployment method.
 FROM python:3.11-slim
 
 RUN useradd -m -u 1000 user
