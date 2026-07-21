@@ -1,6 +1,6 @@
 ---
 title: Nepali Bias Data Tool Backend
-emoji: 🐳
+emoji: 🚂
 colorFrom: purple
 colorTo: gray
 sdk: gradio
@@ -9,21 +9,40 @@ app_file: app.py
 pinned: false
 ---
 
-# Nepali Bias Data Tool — Backend
+# Nepali Bias Data Tool — Backend (Railway)
 
-FastAPI service mounted under a minimal Gradio UI (see `app.py`) so this
-Space can run on HF's free CPU-Basic tier — the Docker SDK is currently a
-paid feature; the Gradio SDK is not.
+**This file is for reference only.** The backend is now deployed on Railway, not Hugging Face Spaces.
 
-All real routes are plain FastAPI, unchanged: `/login`, `/submit`,
-`/my-submissions`, `/my-count`, `/leaderboard`, `/admin/*`, `/health`,
-`/docs`. The Gradio widget itself only lives at `/ui` and is not part of
-the API surface the frontend calls.
+## Railway Deployment
 
-Push this file as `README.md` in the HF Space repo (it's separate from the
-GitHub repo's `backend/README.md`, which stays as local-dev documentation).
+This backend is deployed as a Docker container on Railway's free tier (~300MB RAM).
 
-Set the same secrets as before in Space → Settings → Variables and secrets:
-`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SESSION_SECRET`,
-`ADMIN_PASSWORD`, and (if using the split-embedder setup) `EMBEDDER_URL` /
-`EMBEDDER_API_KEY`.
+- **Dockerfile**: See `Dockerfile` in this directory
+- **Config**: See `railway.json`
+- **Dependencies**: `requirements.txt` (ML-free: no sentence-transformers, no transformers)
+
+## Environment Variables
+
+Set these in Railway's dashboard → Variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key |
+| `SESSION_SECRET` | Yes | HMAC signing secret |
+| `ADMIN_BOOTSTRAP_SECRET` | Yes | One-time admin bootstrap |
+| `CORS_ALLOWED_ORIGINS` | Yes | Frontend URL(s) |
+| `EMBEDDER_URL` | No | Remote embedder URL (optional) |
+| `EMBEDDER_API_KEY` | No | Shared secret for embedder |
+
+## Previous HF Space Deployment (archived)
+
+This Space previously used the Gradio SDK for HF deployment. That approach
+required mounting a Gradio UI at `/ui` and pre-downloading ML models.
+
+The current Railway deployment removes:
+- Gradio dependency and UI mount
+- sentence-transformers and transformers dependencies
+- ML model pre-download
+
+Result: ~300MB RAM usage (down from ~2GB).

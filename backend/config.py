@@ -54,9 +54,6 @@ RESEND_FROM = os.environ.get("RESEND_FROM", "onboarding@resend.dev")
 # in on separate devices without re-entering the access code.
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(20 * 60 * 60)))
 
-MODEL_NAME = os.environ.get(
-    "MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-)
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.90"))
 
 # --- Optional standalone embedder Space -------------------------------------

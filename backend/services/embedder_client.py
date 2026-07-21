@@ -1,14 +1,16 @@
 """
-Encode text to embeddings, either via a separate embedder HF Space
-(EMBEDDER_URL set) or an in-process model (EMBEDDER_URL unset).
+Encode text to embeddings via a separate embedder service (EMBEDDER_URL set).
 
-Why a circuit breaker: if the embedder Space is asleep, crashed, or just
+This is an OPTIONAL component. When EMBEDDER_URL is not set (the default),
+the backend uses RapidFuzz-only dedup and regex-only PII — no ML models
+are loaded in-process.
+
+Why a circuit breaker: if the embedder service is asleep, crashed, or just
 slow, we do NOT want every /check-submission call to hang for the full
 timeout one by one while participants wait. After a few consecutive
 failures we "open" the breaker and skip calling the embedder entirely for
-a cooldown window, going straight to the local-fallback path (or, if there
-is no local model loaded either, letting the caller degrade to fuzzy-only
-matching). This keeps failures cheap and bounded instead of compounding.
+a cooldown window, letting the caller degrade to fuzzy-only matching.
+This keeps failures cheap and bounded instead of compounding.
 """
 
 import logging
@@ -24,7 +26,6 @@ from config import (
     EMBEDDER_CIRCUIT_FAILURE_THRESHOLD,
     EMBEDDER_TIMEOUT_SECONDS,
     EMBEDDER_URL,
-    MODEL_NAME,
     NER_TIMEOUT_SECONDS,
 )
 

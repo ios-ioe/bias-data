@@ -1,5 +1,9 @@
 """
-Nepali Bias Data Collection — backend (FastAPI, Docker HF Space).
+Nepali Bias Data Collection — backend (FastAPI, Railway deployment).
+
+ML-free version optimized for Railway's free tier (~300MB RAM). Uses RapidFuzz
+for duplicate detection and regex for PII — no sentence-transformers, no
+transformers, no Gradio.
 
 All reads and writes to `submissions`/`teams` go through this service using the
 Supabase service role key — the frontend no longer talks to Supabase directly
@@ -21,6 +25,9 @@ with the anon key for CRUD. Routes:
 The Supabase service role key and SESSION_SECRET live only here, never in the
 browser. Admin credentials now live in Supabase (hashed), not an env var --
 see routers/auth.py for /admin/login and the one-time /admin/bootstrap.
+
+Optional: Set EMBEDDER_URL to enable remote ML inference (embeddings + NER).
+Without it, the backend uses RapidFuzz-only dedup and regex-only PII.
 """
 
 import logging
@@ -40,7 +47,7 @@ from routers.health import router as health_router
 from routers.judge import router as judge_router
 from routers.leaderboard import router as leaderboard_router
 from routers.submission import router as submission_router
-from services.duplicate_service import warmup_model
+from services.duplicate_service import init_cache
 from utils.exceptions import AppError
 
 logging.basicConfig(
@@ -52,10 +59,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Initialize the corpus cache (loads submission texts from Supabase).
+    # No ML models to load — duplicate detection uses RapidFuzz only.
     try:
-        warmup_model()
+        init_cache()
     except Exception as exc:
-        logger.error("Failed to load embedding model at startup: %s", exc)
+        logger.error("Failed to initialize corpus cache at startup: %s", exc)
     yield
 
 
@@ -170,33 +179,9 @@ async def unhandled_exception_handler(_request: Request, exc: Exception):
     )
 
 
-# ---------------------------------------------------------------------------
-# Gradio SDK entrypoint.
-#
-# HF Spaces recently locked the Docker SDK behind a paid plan; the Gradio SDK
-# is still free (CPU Basic). Nothing above this changes -- `app` is still a
-# plain FastAPI instance with all routers/middleware/exception handlers
-# attached. We just mount a one-widget Gradio UI onto it at /ui (satisfying
-# HF's requirement that a Gradio SDK Space serve a Gradio app) and run the
-# whole thing with uvicorn on port 7860, same as the old Dockerfile CMD did.
-#
-# All existing routes (/login, /submit, /admin/*, /health, /docs, ...) are
-# untouched and still live at the paths the frontend already calls.
-# ---------------------------------------------------------------------------
-import gradio as gr  # noqa: E402
-
-with gr.Blocks(title="Nepali Bias Data Tool — API") as _ui:
-    gr.Markdown(
-        "## Backend is running\n"
-        "This Space hosts the API only — there's no interactive UI here.\n\n"
-        "- `GET /health` — status check\n"
-        "- `GET /docs` — OpenAPI schema\n\n"
-        "The frontend (Vercel) talks to this Space's REST endpoints directly."
-    )
-
-app = gr.mount_gradio_app(app, _ui, path="/ui")
-
 if __name__ == "__main__":
+    import os
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

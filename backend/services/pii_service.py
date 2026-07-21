@@ -1,12 +1,18 @@
-"""PII detection for submission text."""
+"""PII detection for submission text.
+
+ML-free version: regex + fixed name list only. No NER model, no transformers
+dependency. For a one-day event with 2k-2.5k submissions, this catches:
+  - Phone numbers (Nepali +977 patterns, Devanagari digits)
+  - Email addresses
+  - ~70 common Nepali first names (Roman + Devanagari)
+
+If NER-based name detection is needed later, deploy the embedder service
+and extend scan_pii_batch() to call its /ner endpoint.
+"""
 
 import logging
 import re
-import threading
-from typing import Optional, TypedDict
-
-from config import EMBEDDER_API_KEY
-from services.embedder_client import ner_remote
+from typing import TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +54,10 @@ NEPALI_FIRST_NAMES: list[str] = [
 # NOTE: surnames (Shrestha, Sharma, Gurung, Tamang, etc.) were intentionally
 # removed from this PII list. In Nepali text, surnames are strong caste/
 # ethnicity markers, and "caste" is one of this tool's own 10 target bias
-# categories — flagging every sentence containing a common surname as PII
+# categories -- flagging every sentence containing a common surname as PII
 # nudged annotators toward a friction dialog on exactly the caste-bias data
 # the competition needs. Surnames alone are also weak PII signal compared to
-# a phone number or email. If you need surname-level PII detection, pair it
-# with a nearby phone number/address match instead of a bare name hit.
+# a phone number or email.
 
 DEVANAGARI_NAMES: set[str] = {
     "राम",
@@ -97,8 +102,6 @@ DEVANAGARI_NAMES: set[str] = {
     "अर्जुन",
     "बिष्णु",
 }
-# Surnames (श्रेष्ठ, शर्मा, गुरुङ, तामाङ, etc.) intentionally excluded — see note
-# above NEPALI_FIRST_NAMES.
 
 PHONE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\+9779[678]\d{8}"),
@@ -179,135 +182,10 @@ def scan_pii(text: str) -> PiiResult:
     return {"flagged": flagged, "matched_terms": matched}
 
 
-# ---------------------------------------------------------------------------
-# NER-based name detection -- QA BATCH ONLY (see run_qa_batch in qa_batch.py).
-#
-# The fixed name list above catches ~70 common first names instantly with
-# zero latency, which is fine for the live per-submission check. It misses
-# everything else, though -- most Nepali names aren't in any fixed list.
-# Since the QA batch is an admin-triggered, one-time, post-event action (not
-# something running on every participant's submit click), we can afford to
-# lazily load a real NER model here and run it once across every row, without
-# adding any cost to the live flow at all.
-#
-# This never raises: if the model can't be loaded (no internet, HF Hub
-# unreachable, out of memory, whatever), the batch just logs a warning and
-# falls back to the regex+list-only result for every row -- same as before
-# this feature existed.
-# ---------------------------------------------------------------------------
-
-NER_MODEL_NAME = "debabrata-ai/Nepali-Named-Entity-Tagger-XLM-R"
-
-_ner_pipeline = None
-_ner_load_attempted = False
-_ner_lock = threading.Lock()
-
-
-def _get_ner_pipeline():
-    """Lazily load the NER pipeline on first use. Loaded at most once per
-    process; a failed load is remembered so we don't retry a slow HF Hub
-    download on every single batch run within the same process lifetime."""
-    global _ner_pipeline, _ner_load_attempted
-
-    with _ner_lock:
-        if _ner_pipeline is not None or _ner_load_attempted:
-            return _ner_pipeline
-
-        _ner_load_attempted = True
-        try:
-            from transformers import (
-                AutoModelForTokenClassification,
-                AutoTokenizer,
-                pipeline,
-            )
-
-            logger.info("QA batch: loading NER model %s (first use, may take a while)", NER_MODEL_NAME)
-            tokenizer = AutoTokenizer.from_pretrained(NER_MODEL_NAME)
-            model = AutoModelForTokenClassification.from_pretrained(NER_MODEL_NAME)
-            _ner_pipeline = pipeline(
-                "ner",
-                model=model,
-                tokenizer=tokenizer,
-                aggregation_strategy="simple",
-            )
-            logger.info("QA batch: NER model loaded successfully")
-        except Exception as exc:
-            logger.warning(
-                "QA batch: could not load NER model (%s) -- falling back to "
-                "regex + fixed name list only for this run: %s",
-                NER_MODEL_NAME,
-                exc,
-            )
-            _ner_pipeline = None
-
-    return _ner_pipeline
-
-
-def is_ner_available() -> bool:
-    """True once a load has been attempted and succeeded. Does not trigger
-    a load itself -- callers that want to know before doing real work should
-    call _get_ner_pipeline() (via scan_pii_batch) and check its return."""
-    return _ner_pipeline is not None
-
-
-_NER_BATCH_SIZE = 32
-
-
 def scan_pii_batch(texts: list[str]) -> list[PiiResult]:
-    """QA-batch version of scan_pii: same regex + name-list checks as the
-    live path, PLUS any PERSON entity a NER model finds -- covering names
-    outside the fixed list. Tiered fallback, same pattern as
-    duplicate_service's embedding lookup: try the remote embedder Space's
-    /ner endpoint first, then a local in-process model, then plain
-    regex+list if neither is available. Never raises.
+    """QA-batch version of scan_pii: regex + name-list checks only.
 
-    Runs NER across all texts in one batched pass rather than one row at a
-    time, since this is the whole point of only doing this at QA-batch time:
-    an admin runs it once, not per-submission."""
-    base_results = [scan_pii(text) for text in texts]
-    if not texts:
-        return base_results
-
-    entities_per_text = ner_remote(texts, api_key=EMBEDDER_API_KEY)
-    if entities_per_text is None:
-        entities_per_text = _local_ner_batch(texts)
-
-    if entities_per_text is None:
-        return base_results
-
-    for result, entities in zip(base_results, entities_per_text):
-        person_names = [
-            ent["word"].strip()
-            for ent in entities
-            if ent.get("entity_group") == "PER" and ent.get("word", "").strip()
-        ]
-        new_names = [name for name in person_names if name not in result["matched_terms"]]
-        if new_names:
-            result["matched_terms"] = result["matched_terms"] + new_names
-            result["flagged"] = True
-
-    return base_results
-
-
-def _local_ner_batch(texts: list[str]) -> Optional[list[list[dict]]]:
-    """Fallback tier when the remote embedder Space's /ner is unconfigured
-    or unreachable: load and run the same NER model in-process instead.
-    Returns None (never raises) if that also fails, so the caller degrades
-    to regex+list-only."""
-    ner = _get_ner_pipeline()
-    if ner is None:
-        return None
-
-    all_entities: list[list[dict]] = []
-    try:
-        for start in range(0, len(texts), _NER_BATCH_SIZE):
-            chunk = texts[start : start + _NER_BATCH_SIZE]
-            chunk_entities = ner(chunk)
-            if chunk and chunk_entities and not isinstance(chunk_entities[0], list):
-                chunk_entities = [chunk_entities]
-            all_entities.extend(chunk_entities)
-    except Exception as exc:
-        logger.warning("Local NER inference failed partway through, using regex+list results only: %s", exc)
-        return None
-
-    return all_entities
+    No NER model — just the same scan_pii() applied to each text.
+    Fast enough for 2.5k rows (regex is C-backed under the hood).
+    """
+    return [scan_pii(text) for text in texts]
