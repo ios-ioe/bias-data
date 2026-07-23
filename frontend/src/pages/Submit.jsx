@@ -205,6 +205,7 @@ export default function Submit() {
         links={[
           { to: "/submit", text: "Submit" },
           { to: "/dashboard", text: "Dashboard" },
+          { to: "/tutorial", text: "Tutorial" },
         ]}
         onSignOut={logout}
       />

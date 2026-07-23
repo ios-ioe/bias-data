@@ -1,0 +1,613 @@
+From c215be0ba720a196271c149aa48d920c9e1ee62e Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Thu, 23 Jul 2026 12:58:20 +0000
+Subject: [PATCH] feat: add participant bias-judging tutorial page
+
+- New /tutorial route (participant-protected) that walks through 13
+  static sample sentences, one at a time, using the same category
+  labeling UI as the judge queue.
+- Sample sentences + reference bias labels live in
+  frontend/src/data/tutorialData.json -- swap in real data there.
+- After the last sentence, shows a results screen: overall accuracy,
+  per-category accuracy, and a per-sentence review highlighting any
+  mismatched categories.
+- Added 'Tutorial' link to the participant navbar on Submit and
+  Dashboard pages.
+---
+ frontend/src/App.jsx                |   9 +
+ frontend/src/data/tutorialData.json | 226 +++++++++++++++++++++
+ frontend/src/pages/Dashboard.jsx    |   1 +
+ frontend/src/pages/Submit.jsx       |   1 +
+ frontend/src/pages/Tutorial.jsx     | 296 ++++++++++++++++++++++++++++
+ 5 files changed, 533 insertions(+)
+ create mode 100644 frontend/src/data/tutorialData.json
+ create mode 100644 frontend/src/pages/Tutorial.jsx
+
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index e2b1f02..5560ffc 100644
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -15,6 +15,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
+ const Leaderboard = lazy(() => import("./pages/Leaderboard.jsx"));
+ const Admin = lazy(() => import("./pages/Admin.jsx"));
+ const JudgeQueue = lazy(() => import("./pages/JudgeQueue.jsx"));
++const Tutorial = lazy(() => import("./pages/Tutorial.jsx"));
+ 
+ function PageFallback() {
+   return (
+@@ -55,6 +56,14 @@ export default function App() {
+                 </ProtectedRoute>
+               }
+             />
++            <Route
++              path="/tutorial"
++              element={
++                <ProtectedRoute>
++                  <Tutorial />
++                </ProtectedRoute>
++              }
++            />
+             <Route
+               path="/leaderboard"
+               element={
+diff --git a/frontend/src/data/tutorialData.json b/frontend/src/data/tutorialData.json
+new file mode 100644
+index 0000000..f067914
+--- /dev/null
++++ b/frontend/src/data/tutorialData.json
+@@ -0,0 +1,226 @@
++{
++  "instructions": "For each sentence below, decide whether it contains bias in any of the listed categories. Select 'Yes' or 'No' for every category, then move to the next sentence. At the end you'll see how your answers compare to the reference labels.",
++  "items": [
++    {
++      "id": 1,
++      "text": "Replace this with a real sample sentence #1.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 2,
++      "text": "Replace this with a real sample sentence #2.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 1,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 3,
++      "text": "Replace this with a real sample sentence #3.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 1,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 4,
++      "text": "Replace this with a real sample sentence #4.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 1,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 5,
++      "text": "Replace this with a real sample sentence #5.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 1,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 6,
++      "text": "Replace this with a real sample sentence #6.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 1,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 7,
++      "text": "Replace this with a real sample sentence #7.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 1,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 8,
++      "text": "Replace this with a real sample sentence #8.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 1,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 9,
++      "text": "Replace this with a real sample sentence #9.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 1,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 10,
++      "text": "Replace this with a real sample sentence #10.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 1,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 11,
++      "text": "Replace this with a real sample sentence #11.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 1
++      }
++    },
++    {
++      "id": 12,
++      "text": "Replace this with a real sample sentence #12.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 1,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 1,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    },
++    {
++      "id": 13,
++      "text": "Replace this with a real sample sentence #13.",
++      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
++      "labels": {
++        "gender": 0,
++        "caste": 0,
++        "religional": 0,
++        "religion": 0,
++        "appearence": 0,
++        "socialstatus": 0,
++        "Age": 0,
++        "Disablity": 0,
++        "political": 0,
++        "amiguity": 0
++      }
++    }
++  ]
++}
+diff --git a/frontend/src/pages/Dashboard.jsx b/frontend/src/pages/Dashboard.jsx
+index 2b8c064..78e44c0 100644
+--- a/frontend/src/pages/Dashboard.jsx
++++ b/frontend/src/pages/Dashboard.jsx
+@@ -69,6 +69,7 @@ export default function Dashboard() {
+         links={[
+           { to: "/submit", text: "Submit" },
+           { to: "/dashboard", text: "Dashboard" },
++          { to: "/tutorial", text: "Tutorial" },
+         ]}
+         onSignOut={logout}
+       />
+diff --git a/frontend/src/pages/Submit.jsx b/frontend/src/pages/Submit.jsx
+index d5fc0d6..04ddd60 100644
+--- a/frontend/src/pages/Submit.jsx
++++ b/frontend/src/pages/Submit.jsx
+@@ -205,6 +205,7 @@ export default function Submit() {
+         links={[
+           { to: "/submit", text: "Submit" },
+           { to: "/dashboard", text: "Dashboard" },
++          { to: "/tutorial", text: "Tutorial" },
+         ]}
+         onSignOut={logout}
+       />
+diff --git a/frontend/src/pages/Tutorial.jsx b/frontend/src/pages/Tutorial.jsx
+new file mode 100644
+index 0000000..d392fee
+--- /dev/null
++++ b/frontend/src/pages/Tutorial.jsx
+@@ -0,0 +1,296 @@
++import { useMemo, useState } from "react";
++import { useTeam } from "../context/TeamContext.jsx";
++import { CATEGORIES } from "../config/quotas.js";
++import tutorialData from "../data/tutorialData.json";
++import Badge from "../components/Badge.jsx";
++import ProgressCard from "../components/ProgressCard.jsx";
++import EmptyState from "../components/EmptyState.jsx";
++import TopBar from "../components/TopBar.jsx";
++
++const ITEMS = tutorialData.items || [];
++
++const emptyAnswers = () =>
++  CATEGORIES.reduce((acc, category) => ({ ...acc, [category.key]: 0 }), {});
++
++export default function Tutorial() {
++  const { team_name, logout } = useTeam();
++
++  const [index, setIndex] = useState(0);
++  const [answers, setAnswers] = useState(emptyAnswers);
++  const [responses, setResponses] = useState([]); // per-item { itemId, answers }
++  const [finished, setFinished] = useState(false);
++
++  const current = ITEMS[index] || null;
++  const total = ITEMS.length;
++
++  const anyBias = useMemo(
++    () => CATEGORIES.some((category) => answers[category.key] === 1),
++    [answers]
++  );
++
++  function setAnswer(key, value) {
++    setAnswers((prev) => ({ ...prev, [key]: value }));
++  }
++
++  function handleNext() {
++    if (!current) return;
++    const updatedResponses = [...responses, { itemId: current.id, answers }];
++    setResponses(updatedResponses);
++    setAnswers(emptyAnswers());
++
++    if (index + 1 >= total) {
++      setFinished(true);
++    } else {
++      setIndex((i) => i + 1);
++    }
++  }
++
++  function handleRestart() {
++    setIndex(0);
++    setAnswers(emptyAnswers());
++    setResponses([]);
++    setFinished(false);
++  }
++
++  // Score the completed attempt against the reference labels in the JSON file.
++  const score = useMemo(() => {
++    if (!finished) return null;
++
++    let correctCells = 0;
++    let totalCells = 0;
++    let perfectItems = 0;
++
++    const perCategory = CATEGORIES.reduce(
++      (acc, category) => ({ ...acc, [category.key]: { correct: 0, total: 0 } }),
++      {}
++    );
++
++    const itemResults = responses.map((response) => {
++      const item = ITEMS.find((i) => i.id === response.itemId);
++      const reference = item?.labels || {};
++      let itemCorrect = true;
++      const cellResults = CATEGORIES.map((category) => {
++        const given = response.answers[category.key];
++        const expected = Number(reference[category.key]) === 1 ? 1 : 0;
++        const isRight = given === expected;
++
++        totalCells += 1;
++        perCategory[category.key].total += 1;
++        if (isRight) {
++          correctCells += 1;
++          perCategory[category.key].correct += 1;
++        } else {
++          itemCorrect = false;
++        }
++
++        return { key: category.key, label: category.label, given, expected, isRight };
++      });
++
++      if (itemCorrect) perfectItems += 1;
++
++      return {
++        item,
++        cellResults,
++        itemCorrect,
++      };
++    });
++
++    return {
++      itemResults,
++      correctCells,
++      totalCells,
++      perfectItems,
++      perCategory,
++      pct: totalCells === 0 ? 0 : Math.round((correctCells / totalCells) * 100),
++    };
++  }, [finished, responses]);
++
++  if (total === 0) {
++    return (
++      <div className="submit">
++        <TopBar
++          label={team_name}
++          links={[
++            { to: "/submit", text: "Submit" },
++            { to: "/dashboard", text: "Dashboard" },
++            { to: "/tutorial", text: "Tutorial" },
++          ]}
++          onSignOut={logout}
++        />
++        <EmptyState
++          title="No tutorial data"
++          message="The tutorial dataset is empty. Ask an organizer to add sample sentences to tutorialData.json."
++        />
++      </div>
++    );
++  }
++
++  return (
++    <div className="submit">
++      <TopBar
++        label={team_name}
++        links={[
++          { to: "/submit", text: "Submit" },
++          { to: "/dashboard", text: "Dashboard" },
++          { to: "/tutorial", text: "Tutorial" },
++        ]}
++        onSignOut={logout}
++      />
++
++      <div className="submit-head">
++        <div>
++          <h1 className="page-title">Bias tutorial</h1>
++          <p className="page-sub">{tutorialData.instructions}</p>
++        </div>
++        {!finished && (
++          <div className="stat-pill">
++            <span className="stat-num">
++              {index + 1} / {total}
++            </span>
++            <span className="stat-cap">sentence</span>
++          </div>
++        )}
++      </div>
++
++      {!finished && current && (
++        <>
++          <div className="submit-grid">
++            <section className="panel">
++              <span className="field-label">Sentence {index + 1} of {total}</span>
++              <p className="nepali" style={{ fontSize: 18, marginTop: 12 }}>
++                {current.text}
++              </p>
++            </section>
++
++            <section className="panel">
++              <div className="labels-head">
++                <span className="field-label">Bias categories</span>
++                <Badge variant={anyBias ? "accent" : "neutral"}>
++                  {anyBias ? "biased" : "non-biased"}
++                </Badge>
++              </div>
++              <div className="labels">
++                {CATEGORIES.map((category) => (
++                  <div className="label-row" key={category.key}>
++                    <span className="label-name">{category.label}</span>
++                    <fieldset className="radio-group">
++                      <legend className="sr-only">{category.label}</legend>
++                      <label className="radio-label">
++                        <input
++                          type="radio"
++                          name={category.key}
++                          value="0"
++                          checked={answers[category.key] === 0}
++                          onChange={() => setAnswer(category.key, 0)}
++                        />
++                        <span>No</span>
++                      </label>
++                      <label className="radio-label">
++                        <input
++                          type="radio"
++                          name={category.key}
++                          value="1"
++                          checked={answers[category.key] === 1}
++                          onChange={() => setAnswer(category.key, 1)}
++                        />
++                        <span>Yes</span>
++                      </label>
++                    </fieldset>
++                  </div>
++                ))}
++              </div>
++            </section>
++          </div>
++
++          <div className="submit-bar">
++            <button type="button" className="btn btn-primary btn-lg" onClick={handleNext}>
++              {index + 1 >= total ? "Finish & see results" : "Next sentence"}
++            </button>
++          </div>
++        </>
++      )}
++
++      {finished && score && (
++        <>
++          <div className="dash-summary">
++            <ProgressCard
++              label="Overall accuracy"
++              value={`${score.pct}%`}
++              hint={`${score.correctCells} / ${score.totalCells} labels correct`}
++              accent
++            />
++            <ProgressCard
++              label="Perfect sentences"
++              value={score.perfectItems}
++              hint={`of ${total} sentences`}
++            />
++            <ProgressCard label="Sentences reviewed" value={total} />
++          </div>
++
++          <section className="panel quota-panel">
++            <h2 className="section-title">Accuracy by category</h2>
++            <div className="quota-grid">
++              {CATEGORIES.map((category) => {
++                const stat = score.perCategory[category.key];
++                const pct = stat.total === 0 ? 0 : Math.round((stat.correct / stat.total) * 100);
++                return (
++                  <div className="label-row" key={category.key}>
++                    <span className="label-name">{category.label}</span>
++                    <span>
++                      {stat.correct} / {stat.total} ({pct}%)
++                    </span>
++                  </div>
++                );
++              })}
++            </div>
++          </section>
++
++          <section className="panel">
++            <h2 className="section-title">Answer review</h2>
++            <div className="table-wrap">
++              <table className="table">
++                <thead>
++                  <tr>
++                    <th>Text</th>
++                    <th>Result</th>
++                    <th>Mismatched categories</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {score.itemResults.map((result, i) => {
++                    const wrong = result.cellResults.filter((c) => !c.isRight);
++                    return (
++                      <tr key={result.item?.id ?? i} className={!result.itemCorrect ? "row-flagged" : ""}>
++                        <td className="td-text nepali">{result.item?.text}</td>
++                        <td>
++                          <Badge variant={result.itemCorrect ? "success" : "accent"}>
++                            {result.itemCorrect ? "correct" : "needs review"}
++                          </Badge>
++                        </td>
++                        <td className="td-labels">
++                          {wrong.length === 0 && <span>—</span>}
++                          {wrong.map((c) => (
++                            <Badge key={c.key} variant="neutral">
++                              {c.label}: you said {c.given ? "yes" : "no"}, answer is{" "}
++                              {c.expected ? "yes" : "no"}
++                            </Badge>
++                          ))}
++                        </td>
++                      </tr>
++                    );
++                  })}
++                </tbody>
++              </table>
++            </div>
++          </section>
++
++          <div className="submit-bar">
++            <button type="button" className="btn btn-primary btn-lg" onClick={handleRestart}>
++              Try again
++            </button>
++          </div>
++        </>
++      )}
++    </div>
++  );
++}
+-- 
+2.43.0
+

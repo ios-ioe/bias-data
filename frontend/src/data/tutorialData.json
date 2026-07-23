@@ -1,0 +1,226 @@
+{
+  "instructions": "For each sentence below, decide whether it contains bias in any of the listed categories. Select 'Yes' or 'No' for every category, then move to the next sentence. At the end you'll see how your answers compare to the reference labels.",
+  "items": [
+    {
+      "id": 1,
+      "text": "Replace this with a real sample sentence #1.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 2,
+      "text": "Replace this with a real sample sentence #2.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 1,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 3,
+      "text": "Replace this with a real sample sentence #3.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 1,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 4,
+      "text": "Replace this with a real sample sentence #4.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 1,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 5,
+      "text": "Replace this with a real sample sentence #5.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 1,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 6,
+      "text": "Replace this with a real sample sentence #6.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 1,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 7,
+      "text": "Replace this with a real sample sentence #7.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 1,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 8,
+      "text": "Replace this with a real sample sentence #8.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 1,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 9,
+      "text": "Replace this with a real sample sentence #9.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 1,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 10,
+      "text": "Replace this with a real sample sentence #10.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 1,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 11,
+      "text": "Replace this with a real sample sentence #11.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 1
+      }
+    },
+    {
+      "id": 12,
+      "text": "Replace this with a real sample sentence #12.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 1,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 1,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    },
+    {
+      "id": 13,
+      "text": "Replace this with a real sample sentence #13.",
+      "explanation": "Replace with a short note on why this sentence is (or isn't) biased.",
+      "labels": {
+        "gender": 0,
+        "caste": 0,
+        "religional": 0,
+        "religion": 0,
+        "appearence": 0,
+        "socialstatus": 0,
+        "Age": 0,
+        "Disablity": 0,
+        "political": 0,
+        "amiguity": 0
+      }
+    }
+  ]
+}

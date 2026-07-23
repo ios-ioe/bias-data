@@ -15,6 +15,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
 const Leaderboard = lazy(() => import("./pages/Leaderboard.jsx"));
 const Admin = lazy(() => import("./pages/Admin.jsx"));
 const JudgeQueue = lazy(() => import("./pages/JudgeQueue.jsx"));
+const Tutorial = lazy(() => import("./pages/Tutorial.jsx"));
 
 function PageFallback() {
   return (
@@ -52,6 +53,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/tutorial"
+              element={
+                <ProtectedRoute>
+                  <Tutorial />
                 </ProtectedRoute>
               }
             />

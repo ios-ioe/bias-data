@@ -69,6 +69,7 @@ export default function Dashboard() {
         links={[
           { to: "/submit", text: "Submit" },
           { to: "/dashboard", text: "Dashboard" },
+          { to: "/tutorial", text: "Tutorial" },
         ]}
         onSignOut={logout}
       />
