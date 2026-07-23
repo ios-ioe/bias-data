@@ -2,7 +2,7 @@
 
 import logging
 
-from config import BATCH_SIMILARITY_THRESHOLD, CATEGORIES, NON_BIASED_TARGET, QUOTAS
+from config import BATCH_SIMILARITY_THRESHOLD, CATEGORIES, QUOTAS
 from database import fetch_all_submissions, get_supabase
 from services.duplicate_service import pairwise_duplicates
 from services.pii_service import scan_pii_batch
@@ -32,16 +32,6 @@ def _build_quota_report(rows: list[dict]) -> dict:
                 "met": count >= required,
             }
 
-        non_biased = sum(
-            1
-            for row in team_rows
-            if all(int(row.get(category) or 0) == 0 for category in CATEGORIES)
-        )
-        team_report["non_biased"] = {
-            "count": non_biased,
-            "required": NON_BIASED_TARGET,
-            "met": non_biased >= NON_BIASED_TARGET,
-        }
         report[team_id] = team_report
 
     return report

@@ -133,9 +133,14 @@ export async function loginWithAccessCode(email, accessCode) {
 }
 
 export function checkSubmission(team_id, text) {
-  // team_id here is informational only (used for logging on the backend) —
-  // the backend never trusts it for authorization.
-  return request("/check-submission", { method: "POST", body: { team_id, text } });
+  // team_id is kept for logging/display only -- the backend now derives
+  // the real team_id from the session token below, and scopes the
+  // duplicate check to that team's own submissions only.
+  return request("/check-submission", {
+    method: "POST",
+    body: { team_id, text },
+    token: getTeamToken(),
+  });
 }
 
 export function submitEntry(entry) {

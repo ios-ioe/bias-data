@@ -35,21 +35,35 @@ TeamSession = Annotated[dict, Depends(require_team)]
 
 
 @router.post("/check-submission", response_model=CheckSubmissionResponse)
-def check_submission(body: CheckSubmissionRequest):
+def check_submission(body: CheckSubmissionRequest, session: TeamSession):
     """
     Run duplicate and PII checks on submission text.
+
+    Duplicate detection only compares against the caller's OWN team's past
+    submissions — team_id is taken from the session token (never trusted
+    from the request body), same as every other write/read in this router.
 
     Returns warnings only — never rejects a submission. If neither the
     remote embedder Space nor a local model is reachable, check_duplicate()
     degrades to fuzzy-string matching rather than failing outright — this
     endpoint should never be the reason a participant can't submit.
     """
-    logger.info("check-submission received for team_id=%s", body.team_id)
+    team_id = session["team_id"]
+    if not team_id:
+        # Admin sessions have no team_id of their own -- there's no per-team
+        # corpus to check against, so fail clearly rather than silently
+        # checking against an empty/wrong cache (same guard as /submit).
+        raise HTTPException(
+            status_code=400,
+            detail="Admin sessions cannot run duplicate checks — log in as a team to check.",
+        )
+
+    logger.info("check-submission received for team_id=%s", team_id)
 
     pii_result = scan_pii(body.text)
 
     try:
-        duplicate_result = check_duplicate(body.text)
+        duplicate_result = check_duplicate(body.text, team_id=team_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -63,7 +77,7 @@ def check_submission(body: CheckSubmissionRequest):
 
     logger.info(
         "check-submission complete team_id=%s duplicate_flagged=%s pii_flagged=%s",
-        body.team_id,
+        team_id,
         response.duplicate.flagged,
         response.pii.flagged,
     )
@@ -103,9 +117,10 @@ def submit(body: SubmitRequest, session: TeamSession):
     result = database.insert_submission(row)
     logger.info("submission saved team_id=%s id=%s", team_id, result.get("id"))
 
-    # Keep the duplicate-check cache warm without waiting for its next poll --
-    # this row is now a candidate for the very next team's check.
-    add_to_cache(result["id"], text)
+    # Keep this team's duplicate-check cache warm without waiting for its
+    # next poll -- this row is now a candidate for this team's very next
+    # check (other teams' caches are untouched).
+    add_to_cache(team_id, result["id"], text)
 
     return SubmitResponse(id=result["id"])
 

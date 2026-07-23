@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import database
 import random
 
-from config import CATEGORIES, NON_BIASED_TARGET, QUOTAS
+from config import CATEGORIES, QUOTAS
 from models.schemas import (
     AdminAccountResponse,
     CreateAdminRequest,
@@ -99,10 +99,6 @@ def quota_report(_: AdminSession):
         for category in CATEGORIES:
             count = sum(1 for r in team_rows if int(r.get(category) or 0) == 1)
             team_report[category] = {"count": count, "required": QUOTAS.get(category, 0)}
-        non_biased = sum(
-            1 for r in team_rows if all(int(r.get(c) or 0) == 0 for c in CATEGORIES)
-        )
-        team_report["non_biased"] = {"count": non_biased, "required": NON_BIASED_TARGET}
         report[team_id] = team_report
     return report
 

@@ -56,10 +56,11 @@ def main() -> int:
         if ok:
             data = resp.json()
             all_ok &= check("secrets_configured", data.get("secrets_configured") is True)
-            all_ok &= check(
-                "embedding_available",
-                data.get("embedding_available") is True,
+            check(
+                "embedder configured/reachable (optional — ok if not using one)",
+                data.get("embedder_configured") is not True or data.get("embedder_reachable") is True,
                 f"embedding_mode={data.get('embedding_mode')}",
+                warn_only=True,
             )
             check(
                 "responded quickly (not a cold start)",

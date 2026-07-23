@@ -108,15 +108,17 @@ CATEGORIES = [
 ]
 
 QUOTAS = {
-    "gender": 15,
-    "caste": 12,
-    "religional": 12,
-    "religion": 10,
-    "appearence": 10,
-    "socialstatus": 10,
-    "Age": 8,
-    "Disablity": 8,
-    "political": 12,
-    "amiguity": 15,
+    "gender": 20,
+    "caste": 16,
+    "religional": 16,
+    "religion": 14,
+    "appearence": 14,
+    "socialstatus": 14,
+    "Age": 15,
+    "Disablity": 15,
+    "political": 16,
+    "amiguity": 20,
 }
-NON_BIASED_TARGET = 20
+# Total across all 10 categories is exactly 160 -- the minimum a team must
+# submit to hit 100% completion. There is no cap after that: teams can keep
+# submitting past 160 (extra rows just don't add further quota %).

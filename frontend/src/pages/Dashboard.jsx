@@ -4,7 +4,6 @@ import { useTeam } from "../context/TeamContext.jsx";
 import {
   CATEGORIES,
   QUOTAS,
-  NON_BIASED_TARGET,
   countByCategory,
   quotaProgress,
 } from "../config/quotas.js";
@@ -59,7 +58,7 @@ export default function Dashboard() {
     };
   }, []);
 
-  const { counts, nonBiased } = useMemo(() => countByCategory(rows), [rows]);
+  const { counts } = useMemo(() => countByCategory(rows), [rows]);
   const progress = useMemo(() => quotaProgress(rows), [rows]);
   const completedQuotaCount = progress.completedCategories.length;
 
@@ -94,13 +93,9 @@ export default function Dashboard() {
           <ProgressCard
             label="Completed quotas"
             value={completedQuotaCount}
-            hint={`of ${CATEGORIES.length + 1} categories`}
+            hint={`of ${CATEGORIES.length} categories`}
           />
           <ProgressCard label="Remaining quotas" value={progress.remaining} />
-          <ProgressCard
-            label="Non-biased progress"
-            value={`${nonBiased} / ${NON_BIASED_TARGET}`}
-          />
           <ProgressCard
             label="Overall completion"
             value={`${progress.pct}%`}
@@ -143,11 +138,6 @@ export default function Dashboard() {
                   required={QUOTAS[category.key]}
                 />
               ))}
-              <QuotaProgress
-                label="Non-biased"
-                count={nonBiased}
-                required={NON_BIASED_TARGET}
-              />
             </div>
           </section>
 

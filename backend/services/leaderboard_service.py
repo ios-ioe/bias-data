@@ -20,7 +20,7 @@ import time
 from typing import Optional
 
 import database
-from config import CATEGORIES, NON_BIASED_TARGET, QUOTAS
+from config import CATEGORIES, QUOTAS
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +38,15 @@ _cached_result: list[dict] = []
 def _quota_progress(team_rows: list[dict]) -> dict:
     """Same capped-progress math as the frontend's config/quotas.js and
     services/qa_batch.py's quota report, kept here as the single backend
-    source of truth for anything that ranks teams."""
+    source of truth for anything that ranks teams. Total need is the fixed
+    160-submission minimum spread across the 10 categories -- there's no
+    cap after that, teams can keep submitting past 160."""
     earned = 0
-    need = sum(QUOTAS.get(category, 0) for category in CATEGORIES) + NON_BIASED_TARGET
+    need = sum(QUOTAS.get(category, 0) for category in CATEGORIES)
 
     for category in CATEGORIES:
         count = sum(1 for row in team_rows if int(row.get(category) or 0) == 1)
         earned += min(count, QUOTAS.get(category, 0))
-
-    non_biased = sum(
-        1 for row in team_rows if all(int(row.get(category) or 0) == 0 for category in CATEGORIES)
-    )
-    earned += min(non_biased, NON_BIASED_TARGET)
 
     pct = round((earned / need) * 100) if need else 0
     return {"earned": earned, "need": need, "pct": pct}

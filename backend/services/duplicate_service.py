@@ -24,7 +24,7 @@ from config import (
     FUZZ_TOP_K,
     SIMILARITY_THRESHOLD,
 )
-from database import count_all_submissions, fetch_all_submissions
+from database import count_submissions_for_team, fetch_submissions_for_team
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,15 @@ _CACHE_REFRESH_INTERVAL_SECONDS = 15
 
 
 class _CorpusCache:
-    """In-process cache of submission IDs and texts for fast duplicate checking.
+    """In-process cache of one team's submission IDs and texts for fast
+    duplicate checking, scoped to a single team_id.
 
     Refreshes from Supabase on a cheap cadence (row-count check every 15s).
     Updated incrementally in O(1) when this process inserts a new row.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, team_id: str) -> None:
+        self._team_id = team_id
         self._lock = threading.Lock()
         self._ready = False
         self._ids: list[str] = []
@@ -52,7 +54,7 @@ class _CorpusCache:
         self._last_known_count: Optional[int] = None
 
     def _full_reload_locked(self) -> None:
-        rows = fetch_all_submissions("id, text")
+        rows = fetch_submissions_for_team(self._team_id, "id, text")
         ids: list[str] = []
         texts: list[str] = []
         seen: set[str] = set()
@@ -97,7 +99,7 @@ class _CorpusCache:
             self._last_count_check = now
 
         try:
-            current_count = count_all_submissions()
+            current_count = count_submissions_for_team(self._team_id)
         except Exception as exc:
             logger.warning("Duplicate cache: could not check row count: %s", exc)
             return
@@ -124,24 +126,38 @@ class _CorpusCache:
             return list(self._ids), list(self._texts)
 
 
-_corpus_cache = _CorpusCache()
+_team_caches: dict[str, _CorpusCache] = {}
+_team_caches_lock = threading.Lock()
+
+
+def _get_team_cache(team_id: str) -> _CorpusCache:
+    """Return the corpus cache for this team, creating it on first use.
+
+    Each team gets its own independent cache instance, so duplicate checks
+    for one team never see another team's submissions.
+    """
+    with _team_caches_lock:
+        cache = _team_caches.get(team_id)
+        if cache is None:
+            cache = _CorpusCache(team_id)
+            _team_caches[team_id] = cache
+        return cache
 
 
 def init_cache() -> None:
-    """Initialize the corpus cache at startup. Non-blocking — retries lazily."""
-    try:
-        _corpus_cache.ensure_fresh()
-    except Exception as exc:
-        logger.warning("Duplicate cache: initial warmup failed, will retry lazily: %s", exc)
+    """No-op at startup now that caches are created lazily per team_id on
+    first use — kept as a callable for backward-compat with app startup."""
+    return
 
 
-def add_to_cache(row_id: str, text: str) -> None:
+def add_to_cache(team_id: str, row_id: str, text: str) -> None:
     """Called right after a successful /submit insert so the new row is
-    immediately visible to future duplicate checks without a DB round-trip."""
+    immediately visible to future duplicate checks for that team, without a
+    DB round-trip."""
     try:
-        _corpus_cache.add(row_id, text)
+        _get_team_cache(team_id).add(row_id, text)
     except Exception as exc:
-        logger.warning("Duplicate cache: failed to add row %s: %s", row_id, exc)
+        logger.warning("Duplicate cache: failed to add row %s for team_id=%s: %s", row_id, team_id, exc)
 
 
 class DuplicateResult(TypedDict):
@@ -165,18 +181,20 @@ def _empty_result() -> DuplicateResult:
     }
 
 
-def check_duplicate(text: str) -> DuplicateResult:
-    """Compare text against existing submissions using RapidFuzz.
+def check_duplicate(text: str, team_id: str) -> DuplicateResult:
+    """Compare text against that SAME team's own past submissions using
+    RapidFuzz. Teams are never compared against each other's data.
 
-    Uses process.extract to find top-K fuzzy matches from the corpus cache,
-    then returns the best match above the similarity threshold.
+    Uses process.extract to find top-K fuzzy matches from the team's corpus
+    cache, then returns the best match above the similarity threshold.
     """
     normalized = text.strip()
     if not normalized:
         return _empty_result()
 
-    _corpus_cache.ensure_fresh()
-    id_list, text_list = _corpus_cache.snapshot()
+    corpus_cache = _get_team_cache(team_id)
+    corpus_cache.ensure_fresh()
+    id_list, text_list = corpus_cache.snapshot()
 
     if not text_list:
         logger.info("Duplicate check: empty database, no candidates")
